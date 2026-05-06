@@ -293,3 +293,63 @@ def fetch_realtime_quote(symbol: str) -> dict:
         "date": parts[30],
         "time": parts[31],
     }
+
+
+def fetch_realtime_quotes_batch(symbols: list) -> dict:
+    """
+    批量获取实时行情（一次HTTP请求）
+    symbols: ["688110", "600519", ...]
+    返回 {symbol: {name,open,high,low,price,volume,amount,date,time,yesterday_close}, ...}
+    """
+    if not symbols:
+        return {}
+
+    sina_list = []
+    sym_map = {}  # sina_sym -> original symbol
+    for s in symbols:
+        sina_sym, _ = _market_prefix(s)
+        sina_list.append(sina_sym)
+        sym_map[sina_sym] = s
+
+    sess = _session()
+    r = sess.get(
+        f"https://hq.sinajs.cn/list={','.join(sina_list)}",
+        headers={"Referer": "https://finance.sina.com.cn"},
+        timeout=10,
+    )
+    if r.status_code != 200:
+        raise ConnectionError("批量行情获取失败")
+
+    results = {}
+    for line in r.text.strip().split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        # var hq_str_sh688110="东芯股份,..."
+        m = re.match(r'var hq_str_(\w+)="(.+)"', line)
+        if not m:
+            continue
+        sina_sym = m.group(1)
+        symbol = sym_map.get(sina_sym)
+        if not symbol:
+            continue
+        parts = m.group(2).split(",")
+        if len(parts) < 32 or not parts[3]:
+            continue
+        try:
+            results[symbol] = {
+                "name": parts[0],
+                "open": float(parts[1]) if parts[1] else 0,
+                "yesterday_close": float(parts[2]) if parts[2] else 0,
+                "price": float(parts[3]) if parts[3] else 0,
+                "high": float(parts[4]) if parts[4] else 0,
+                "low": float(parts[5]) if parts[5] else 0,
+                "volume": float(parts[8]) if parts[8] else 0,
+                "amount": float(parts[9]) if parts[9] else 0,
+                "date": parts[30],
+                "time": parts[31],
+            }
+        except (ValueError, IndexError):
+            continue
+
+    return results

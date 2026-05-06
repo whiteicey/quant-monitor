@@ -43,10 +43,10 @@ def plot_signals(df: pd.DataFrame, title: str = "多空监控系统", save_path:
     weak_buy = df[df["weak_buy"] & ~df["strong_buy"]]
     weak_sell = df[df["weak_sell"] & ~df["strong_sell"]]
 
-    ax_price.scatter(strong_buy.index, strong_buy["low"] * 0.99, marker="^", c="green", s=120, zorder=5, label="强烈买入")
-    ax_price.scatter(strong_sell.index, strong_sell["high"] * 1.01, marker="v", c="red", s=120, zorder=5, label="强烈卖出")
-    ax_price.scatter(weak_buy.index, weak_buy["low"] * 0.99, marker="^", c="lime", s=60, zorder=4, label="弱势买入")
-    ax_price.scatter(weak_sell.index, weak_sell["high"] * 1.01, marker="v", c="orange", s=60, zorder=4, label="弱势卖出")
+    ax_price.scatter(strong_buy.index, strong_buy["low"] * 0.99, marker="^", c="red", s=120, zorder=5, label="强烈买入")
+    ax_price.scatter(strong_sell.index, strong_sell["high"] * 1.01, marker="v", c="green", s=120, zorder=5, label="强烈卖出")
+    ax_price.scatter(weak_buy.index, weak_buy["low"] * 0.99, marker="^", c="#ff6b6b", s=60, zorder=4, label="弱势买入")
+    ax_price.scatter(weak_sell.index, weak_sell["high"] * 1.01, marker="v", c="#51cf66", s=60, zorder=4, label="弱势卖出")
 
     ax_price.legend(loc="upper left", fontsize=8, ncol=4)
     ax_price.set_ylabel("价格")
@@ -54,7 +54,7 @@ def plot_signals(df: pd.DataFrame, title: str = "多空监控系统", save_path:
     ax_price.tick_params(labelbottom=False)
 
     # ===== 成交量 =====
-    colors = ["green" if c > o else "red" for c, o in zip(df["close"], df["open"])]
+    colors = ["red" if c > o else "green" for c, o in zip(df["close"], df["open"])]
     ax_vol.bar(dates, df["volume"], color=colors, alpha=0.6, width=0.8)
     ax_vol.plot(dates, df["volume_avg"], color="blue", linewidth=0.8, label="均量线")
     ax_vol.set_ylabel("成交量")
@@ -62,7 +62,7 @@ def plot_signals(df: pd.DataFrame, title: str = "多空监控系统", save_path:
     ax_vol.grid(True, alpha=0.3)
 
     # ===== MACD =====
-    macd_colors = ["green" if v >= 0 else "red" for v in df["macd_hist"]]
+    macd_colors = ["red" if v >= 0 else "green" for v in df["macd_hist"]]
     ax_macd.bar(dates, df["macd_hist"], color=macd_colors, alpha=0.5, width=0.8)
     ax_macd.plot(dates, df["macd_line"], color="blue", linewidth=0.8, label="MACD")
     ax_macd.plot(dates, df["signal_line"], color="orange", linewidth=0.8, label="Signal")

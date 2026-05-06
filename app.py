@@ -10,11 +10,40 @@ from flask import Flask, request, jsonify
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from src.data import fetch_stock_daily, fetch_stock_info, search_stock, fetch_realtime_quote
+from src.data import fetch_stock_daily, fetch_stock_info, search_stock, fetch_realtime_quote, fetch_realtime_quotes_batch
 from src.signals import compute_signals, get_latest_signal, SignalParams
 from src.backtest import backtest, get_strategy_list, get_preset_list
 
 app = Flask(__name__)
+
+import time as _time
+
+# Watchlist JSON file path (next to the exe/script)
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# For PyInstaller, use the directory where the exe is located
+if getattr(sys, 'frozen', False):
+    _BASE_DIR = os.path.dirname(sys.executable)
+WATCHLIST_FILE = os.path.join(_BASE_DIR, "watchlist.json")
+
+
+def _load_watchlist():
+    if os.path.exists(WATCHLIST_FILE):
+        try:
+            with open(WATCHLIST_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return []
+
+
+def _save_watchlist(data):
+    with open(WATCHLIST_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+# Signal cache: {symbol: {"signal": SignalResult dict, "timestamp": float}}
+_signal_cache = {}
+_SIGNAL_CACHE_TTL = 60  # seconds
 
 
 # 让Flask的JSON序列化把NaN/Inf替换为null
@@ -132,7 +161,7 @@ def api_realtime():
     last_bar = {
         "candle": {"time": ts, "open": o, "high": h, "low": l, "close": c},
         "volume": {"time": ts, "value": float(last_row["volume"]),
-                   "color": "rgba(38,166,154,0.6)" if c >= o else "rgba(239,83,80,0.6)"},
+                   "color": "rgba(239,83,80,0.6)" if c >= o else "rgba(38,166,154,0.6)"},
         "fast_ema": {"time": ts, "value": _v("fast_ema")},
         "slow_ema": {"time": ts, "value": _v("slow_ema")},
         "bb_upper": {"time": ts, "value": _v("bb_upper")},
@@ -196,7 +225,7 @@ def api_analyze():
         ts = int(sig_df.index[i].timestamp())
         o, h, l, c = float(row["open"]), float(row["high"]), float(row["low"]), float(row["close"])
         candles.append({"time": ts, "open": o, "high": h, "low": l, "close": c})
-        vc = "rgba(38,166,154,0.6)" if c >= o else "rgba(239,83,80,0.6)"
+        vc = "rgba(239,83,80,0.6)" if c >= o else "rgba(38,166,154,0.6)"
         volumes.append({"time": ts, "value": float(row["volume"]), "color": vc})
 
         def _v(col):
@@ -216,7 +245,7 @@ def api_analyze():
                 arr.append({"time": ts, "value": val})
         mh = _v("macd_hist")
         if mh is not None:
-            macd_hist.append({"time": ts, "value": mh, "color": "rgba(38,166,154,0.7)" if mh >= 0 else "rgba(239,83,80,0.7)"})
+            macd_hist.append({"time": ts, "value": mh, "color": "rgba(239,83,80,0.7)" if mh >= 0 else "rgba(38,166,154,0.7)"})
         rv = _v("rsi")
         if rv is not None:
             rsi_arr.append({"time": ts, "value": rv})
@@ -226,9 +255,9 @@ def api_analyze():
         if bool(row.get("strong_sell", False)):
             ssell_m.append({"time": ts, "position": "aboveBar", "color": "#FF4444", "shape": "arrowDown", "text": "强卖"})
         if bool(row.get("weak_buy", False)) and not bool(row.get("strong_buy", False)):
-            wbuy_m.append({"time": ts, "position": "belowBar", "color": "#26a69a", "shape": "circle", "text": "买"})
+            wbuy_m.append({"time": ts, "position": "belowBar", "color": "#ef5350", "shape": "circle", "text": "买"})
         if bool(row.get("weak_sell", False)) and not bool(row.get("strong_sell", False)):
-            wsell_m.append({"time": ts, "position": "aboveBar", "color": "#ef5350", "shape": "circle", "text": "卖"})
+            wsell_m.append({"time": ts, "position": "aboveBar", "color": "#26a69a", "shape": "circle", "text": "卖"})
 
     return jsonify({
         "name": name, "symbol": symbol, "period": period,
@@ -253,6 +282,126 @@ def api_strategies():
 @app.route("/api/presets")
 def api_presets():
     return jsonify(get_preset_list())
+
+
+@app.route("/api/watchlist")
+def api_watchlist_get():
+    return jsonify(_load_watchlist())
+
+
+@app.route("/api/watchlist", methods=["POST"])
+def api_watchlist_add():
+    data = request.get_json(force=True)
+    symbol = data.get("symbol", "").strip()
+    if not symbol:
+        return jsonify({"error": "缺少股票代码"}), 400
+    
+    # Get stock name
+    name = data.get("name", "")
+    if not name:
+        try:
+            name = fetch_stock_info(symbol)
+        except Exception:
+            name = symbol
+    
+    wl = _load_watchlist()
+    # Check duplicate
+    if any(item["symbol"] == symbol for item in wl):
+        return jsonify({"error": "已在自选股中"}), 400
+    
+    wl.append({"symbol": symbol, "name": name})
+    _save_watchlist(wl)
+    return jsonify({"ok": True, "symbol": symbol, "name": name})
+
+
+@app.route("/api/watchlist/<symbol>", methods=["DELETE"])
+def api_watchlist_delete(symbol):
+    wl = _load_watchlist()
+    wl = [item for item in wl if item["symbol"] != symbol]
+    _save_watchlist(wl)
+    # Clear cache
+    _signal_cache.pop(symbol, None)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/watchlist/realtime")
+def api_watchlist_realtime():
+    """批量实时行情 + 带缓存的信号摘要"""
+    wl = _load_watchlist()
+    if not wl:
+        return jsonify([])
+    
+    symbols = [item["symbol"] for item in wl]
+    name_map = {item["symbol"]: item["name"] for item in wl}
+    
+    # Batch realtime quotes (1 HTTP request)
+    try:
+        quotes = fetch_realtime_quotes_batch(symbols)
+    except Exception as e:
+        return jsonify({"error": f"行情获取失败: {e}"}), 400
+    
+    # Signal calculation with cache
+    now = _time.time()
+    results = []
+    for sym in symbols:
+        q = quotes.get(sym)
+        if not q:
+            continue
+        
+        # Use cached signal or recalculate
+        cached = _signal_cache.get(sym)
+        signal_data = None
+        if cached and (now - cached["timestamp"]) < _SIGNAL_CACHE_TTL:
+            signal_data = cached["signal"]
+        else:
+            try:
+                df = fetch_stock_daily(sym, "20240101", "")
+                sig_df = compute_signals(df)
+                sig = get_latest_signal(sig_df)
+                signal_data = asdict(sig)
+                _signal_cache[sym] = {"signal": signal_data, "timestamp": now}
+            except Exception:
+                signal_data = None
+        
+        chg = q["price"] - q["yesterday_close"] if q["yesterday_close"] else 0
+        chg_pct = (chg / q["yesterday_close"] * 100) if q["yesterday_close"] else 0
+        
+        item = {
+            "symbol": sym,
+            "name": q.get("name") or name_map.get(sym, sym),
+            "price": q["price"],
+            "change": round(chg, 2),
+            "change_pct": round(chg_pct, 2),
+            "high": q["high"],
+            "low": q["low"],
+            "volume": q["volume"],
+            "date": q.get("date", ""),
+            "time": q.get("time", ""),
+        }
+        if signal_data:
+            item["bull_score"] = signal_data.get("bullish_signals", 0)
+            item["bear_score"] = signal_data.get("bearish_signals", 0)
+            item["trend"] = signal_data.get("trend", "震荡")
+            # Determine signal text
+            if signal_data.get("strong_buy"):
+                item["signal"] = "强烈买入"
+            elif signal_data.get("strong_sell"):
+                item["signal"] = "强烈卖出"
+            elif signal_data.get("weak_buy"):
+                item["signal"] = "买入"
+            elif signal_data.get("weak_sell"):
+                item["signal"] = "卖出"
+            else:
+                item["signal"] = "观望"
+        else:
+            item["bull_score"] = 0
+            item["bear_score"] = 0
+            item["trend"] = "--"
+            item["signal"] = "--"
+        
+        results.append(item)
+    
+    return jsonify(results)
 
 
 @app.route("/api/backtest")
@@ -335,8 +484,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
     --border: #253044; --border2: #2f3d55;
     --text: #dce4f0; --text-dim: #7a8ba4; --text-xs: #5a6a80;
     --accent: #4f8ff7; --accent2: #6ba3ff;
-    --green: #00d98b; --green-dim: rgba(0,217,139,0.15);
-    --red: #ff4757; --red-dim: rgba(255,71,87,0.15);
+    --green: #ff4757; --green-dim: rgba(255,71,87,0.15);
+    --red: #00d98b; --red-dim: rgba(0,217,139,0.15);
     --gold: #ffb347; --gold-dim: rgba(255,179,71,0.12);
     --purple: #a78bfa;
   }
@@ -382,8 +531,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
   /* Alert banner */
   .alert-banner { padding:8px 20px; font-size:15px; font-weight:700; text-align:center; display:none; }
-  .alert-buy { background:linear-gradient(90deg,#052e1e,#064e3b); color:#34d399; display:block; }
-  .alert-sell { background:linear-gradient(90deg,#3b0a0a,#7f1d1d); color:#fca5a5; display:block; }
+  .alert-buy { background:linear-gradient(90deg,#3b0a0a,#7f1d1d); color:#fca5a5; display:block; }
+  .alert-sell { background:linear-gradient(90deg,#052e1e,#064e3b); color:#34d399; display:block; }
 
   /* Main layout */
   .main { display:flex; height:calc(100vh - 52px); overflow:hidden; }
@@ -444,6 +593,43 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .collapse-btn:hover { color:var(--text); }
   .collapsible { overflow:hidden; transition:max-height .3s ease; }
 
+  /* View tabs */
+  .view-tabs { display:flex; gap:2px; background:var(--bg3); border-radius:6px; padding:2px; }
+  .view-tab { padding:5px 14px; border-radius:4px; cursor:pointer; font-size:13px; color:var(--text-dim); transition:all .2s; border:none; background:transparent; font-weight:600; }
+  .view-tab.active { background:var(--accent); color:#fff; }
+  .view-tab:hover:not(.active) { color:var(--text); background:var(--bg4); }
+
+  /* Watchlist view */
+  #view-watchlist { display:block; padding:10px; }
+  #view-detail { display:none; }
+  .wl-header { display:flex; align-items:center; gap:10px; margin-bottom:12px; flex-wrap:wrap; }
+  .wl-header h2 { font-size:16px; color:var(--accent2); font-weight:700; }
+  .wl-add-wrap { position:relative; }
+  .wl-add-wrap input { width:200px; background:var(--bg3); border:1px solid var(--border); color:var(--text); padding:7px 12px; border-radius:6px; font-size:13px; outline:none; }
+  .wl-add-wrap input:focus { border-color:var(--accent); }
+  .wl-add-dropdown { position:absolute; top:100%; left:0; width:320px; max-height:300px; overflow-y:auto; background:var(--bg3); border:1px solid var(--border2); border-radius:8px; display:none; z-index:200; box-shadow:0 8px 32px rgba(0,0,0,.5); }
+  .wl-add-dropdown.show { display:block; }
+  .wl-add-item { padding:8px 12px; cursor:pointer; display:flex; justify-content:space-between; border-bottom:1px solid var(--border); font-size:13px; }
+  .wl-add-item:hover { background:var(--bg4); }
+  .wl-status { font-size:12px; color:var(--text-dim); margin-left:auto; }
+
+  .wl-table { width:100%; border-collapse:collapse; }
+  .wl-table th { background:var(--bg3); color:var(--text-dim); padding:8px 10px; text-align:center; font-size:12px; font-weight:600; border-bottom:1px solid var(--border); position:sticky; top:0; z-index:1; }
+  .wl-table td { padding:8px 10px; text-align:center; border-bottom:1px solid rgba(255,255,255,.04); font-size:13px; cursor:pointer; transition:background .15s; }
+  .wl-table tr:hover td { background:var(--bg4); }
+  .wl-table .td-name { text-align:left; font-weight:600; }
+  .wl-table .td-code { text-align:left; color:var(--text-dim); font-family:'JetBrains Mono',monospace; font-size:12px; }
+  .wl-table .td-price { font-family:'JetBrains Mono',monospace; font-weight:700; font-size:15px; }
+  .wl-table .td-change { font-family:'JetBrains Mono',monospace; font-weight:600; }
+  .wl-table .td-score { font-family:'JetBrains Mono',monospace; }
+  .wl-table .td-signal { font-weight:700; font-size:12px; padding:2px 8px; border-radius:4px; display:inline-block; }
+  .wl-del-btn { background:none; border:1px solid var(--border); color:var(--text-dim); border-radius:4px; padding:2px 8px; cursor:pointer; font-size:11px; }
+  .wl-del-btn:hover { border-color:var(--red); color:var(--red); }
+
+  .wl-empty { text-align:center; padding:60px 20px; color:var(--text-dim); }
+  .wl-empty p { font-size:15px; margin-bottom:8px; }
+  .wl-empty span { font-size:12px; }
+
   @media(max-width:1000px){
     .main { flex-direction:column; height:auto; overflow:visible; }
     .sidebar { width:100%; min-width:0; border-left:none; border-top:1px solid var(--border); max-height:none; }
@@ -463,6 +649,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
     .chart-area { padding:4px 6px 6px; }
     #realtime-price { font-size:16px; }
     #realtime-change { font-size:12px; }
+    .wl-table .td-price { font-size:14px; }
+    .wl-table th, .wl-table td { padding:6px 6px; font-size:12px; }
   }
   @media(max-width:500px){
     .topbar { gap:4px; padding:6px 6px; }
@@ -471,6 +659,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
     .bt-grid { grid-template-columns:1fr 1fr; }
     .bt-cell .bt-val { font-size:15px; }
     .params-grid { grid-template-columns:1fr; }
+    .wl-header { gap:6px; }
+    .wl-add-wrap input { width:150px; }
   }
 </style>
 </head>
@@ -479,6 +669,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <!-- Top Bar -->
 <div class="topbar">
   <span class="brand">A股信号监控</span>
+  <div class="view-tabs">
+    <button class="view-tab active" data-view="watchlist" onclick="switchView('watchlist')">自选股</button>
+    <button class="view-tab" data-view="detail" onclick="switchView('detail')">个股详情</button>
+  </div>
 
   <div class="search-wrap">
     <input id="inp-search" placeholder="输入代码或名称搜索..." autocomplete="off">
@@ -514,6 +708,42 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <div class="alert-banner" id="alert-banner"></div>
 
 <div class="main">
+  <!-- 自选股视图 -->
+  <div id="view-watchlist" style="width:100%;overflow-y:auto;">
+    <div class="wl-header">
+      <h2>自选股</h2>
+      <div class="wl-add-wrap">
+        <input id="wl-add-input" placeholder="输入代码或名称添加..." autocomplete="off">
+        <div class="wl-add-dropdown" id="wl-add-dropdown"></div>
+      </div>
+      <span class="wl-status" id="wl-status"></span>
+    </div>
+    <div id="wl-content">
+      <div class="wl-empty" id="wl-empty">
+        <p>还没有自选股</p>
+        <span>在上方搜索框输入股票代码或名称添加</span>
+      </div>
+      <table class="wl-table" id="wl-table" style="display:none;">
+        <thead>
+          <tr>
+            <th>股票</th>
+            <th>最新价</th>
+            <th>涨跌幅</th>
+            <th>多头</th>
+            <th>空头</th>
+            <th>趋势</th>
+            <th>信号</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="wl-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- 个股详情视图 -->
+  <div id="view-detail" style="display:none;">
+    <div style="display:flex;width:100%;">
   <div class="chart-area">
     <div class="chart-box"><div class="chart-label">K线 / EMA / 布林带</div><div id="chart-main"></div></div>
     <div class="chart-box"><div class="chart-label">MACD</div><div id="chart-macd"></div></div>
@@ -602,6 +832,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
           <div class="param-item"><label>印花税率</label><input type="number" id="bt-tax" value="0.001" step="0.0001" min="0"></div>
         </div>
       </div>
+    </div>
+  </div>
     </div>
   </div>
 </div>
@@ -718,7 +950,7 @@ function initCharts() {
   };
 
   mainChart = LightweightCharts.createChart(document.getElementById('chart-main'), { ...commonOpts, width: document.getElementById('chart-main').clientWidth, height: 400 });
-  candleSeries = mainChart.addCandlestickSeries({ upColor:'#26a69a', downColor:'#ef5350', borderUpColor:'#26a69a', borderDownColor:'#ef5350', wickUpColor:'#26a69a', wickDownColor:'#ef5350' });
+  candleSeries = mainChart.addCandlestickSeries({ upColor:'#ef5350', downColor:'#26a69a', borderUpColor:'#ef5350', borderDownColor:'#26a69a', wickUpColor:'#ef5350', wickDownColor:'#26a69a' });
   volSeries = mainChart.addHistogramSeries({ priceFormat:{type:'volume'}, priceScaleId:'vol' });
   mainChart.priceScale('vol').applyOptions({ scaleMargins:{top:0.85,bottom:0} });
   fastEmaSeries = mainChart.addLineSeries({ color:'#ffb347', lineWidth:1, title:'EMA快' });
@@ -964,7 +1196,7 @@ async function fetchRealtime() {
     if (lb.signal_line && lb.signal_line.value != null) macdSignalSeries.update(lb.signal_line);
     if (lb.macd_hist && lb.macd_hist.value != null) {
       const mhv = lb.macd_hist.value;
-      macdHistSeries.update({time: lb.macd_hist.time, value: mhv, color: mhv >= 0 ? 'rgba(38,166,154,0.7)' : 'rgba(239,83,80,0.7)'});
+      macdHistSeries.update({time: lb.macd_hist.time, value: mhv, color: mhv >= 0 ? 'rgba(239,83,80,0.7)' : 'rgba(38,166,154,0.7)'});
     }
     if (lb.rsi && lb.rsi.value != null) rsiSeries.update(lb.rsi);
 
@@ -1072,18 +1304,164 @@ function applyPreset(presetId) {
   if (!initializing) doAnalyze();
 }
 
+// ---- Watchlist ----
+let currentView = 'watchlist';
+let watchlistTimer = null;
+const WL_REFRESH_INTERVAL = 5000;
+let wlAddTimeout = null;
+
+function switchView(view) {
+  currentView = view;
+  document.querySelectorAll('.view-tab').forEach(t => t.classList.remove('active'));
+  document.querySelector(`.view-tab[data-view="${view}"]`).classList.add('active');
+  
+  const wlView = document.getElementById('view-watchlist');
+  const dtView = document.getElementById('view-detail');
+  
+  if (view === 'watchlist') {
+    wlView.style.display = 'block';
+    dtView.style.display = 'none';
+    stopRealtime();
+    startWatchlistRefresh();
+    refreshWatchlist();
+  } else {
+    wlView.style.display = 'none';
+    dtView.style.display = 'block';
+    stopWatchlistRefresh();
+    if (chartsReady) startRealtime();
+  }
+}
+
+function startWatchlistRefresh() {
+  if (watchlistTimer) clearInterval(watchlistTimer);
+  watchlistTimer = setInterval(refreshWatchlist, WL_REFRESH_INTERVAL);
+}
+
+function stopWatchlistRefresh() {
+  if (watchlistTimer) { clearInterval(watchlistTimer); watchlistTimer = null; }
+}
+
+async function refreshWatchlist() {
+  try {
+    const resp = await fetch('/api/watchlist/realtime');
+    const data = await resp.json();
+    if (data.error) return;
+    renderWatchlist(data);
+    const now = new Date();
+    const t = now.getHours().toString().padStart(2,'0') + ':' + now.getMinutes().toString().padStart(2,'0') + ':' + now.getSeconds().toString().padStart(2,'0');
+    document.getElementById('wl-status').textContent = '更新于 ' + t;
+  } catch(e) {}
+}
+
+function renderWatchlist(data) {
+  const empty = document.getElementById('wl-empty');
+  const table = document.getElementById('wl-table');
+  const tbody = document.getElementById('wl-tbody');
+  
+  if (!data || data.length === 0) {
+    empty.style.display = 'block';
+    table.style.display = 'none';
+    return;
+  }
+  empty.style.display = 'none';
+  table.style.display = 'table';
+  
+  tbody.innerHTML = data.map(d => {
+    const chgCls = d.change >= 0 ? 'val-green' : 'val-red';
+    const sign = d.change >= 0 ? '+' : '';
+    const sigCls = (d.signal === '强烈买入' || d.signal === '买入') ? 'val-green' : (d.signal === '强烈卖出' || d.signal === '卖出') ? 'val-red' : '';
+    const sigBg = (d.signal === '强烈买入') ? 'background:var(--green-dim)' : (d.signal === '强烈卖出') ? 'background:var(--red-dim)' : 'background:var(--bg4)';
+    const trendCls = d.trend === '上涨' ? 'val-green' : d.trend === '下跌' ? 'val-red' : '';
+    return `<tr onclick="goDetail('${d.symbol}')">
+      <td><span class="td-name">${d.name}</span><br><span class="td-code">${d.symbol}</span></td>
+      <td class="td-price ${chgCls}">${d.price.toFixed(2)}</td>
+      <td class="td-change ${chgCls}">${sign}${d.change_pct.toFixed(2)}%</td>
+      <td class="td-score">${d.bull_score}/6</td>
+      <td class="td-score">${d.bear_score}/6</td>
+      <td class="${trendCls}">${d.trend}</td>
+      <td><span class="td-signal ${sigCls}" style="${sigBg}">${d.signal}</span></td>
+      <td><button class="wl-del-btn" onclick="event.stopPropagation();delWatchlist('${d.symbol}')">删除</button></td>
+    </tr>`;
+  }).join('');
+}
+
+function goDetail(symbol) {
+  currentSymbol = symbol;
+  document.getElementById('inp-search').value = symbol;
+  switchView('detail');
+  doAnalyze();
+}
+
+async function delWatchlist(symbol) {
+  try {
+    await fetch('/api/watchlist/' + symbol, {method: 'DELETE'});
+    refreshWatchlist();
+  } catch(e) {}
+}
+
+// Watchlist add search
+const wlAddInput = document.getElementById('wl-add-input');
+const wlAddDropdown = document.getElementById('wl-add-dropdown');
+
+wlAddInput.addEventListener('input', () => {
+  clearTimeout(wlAddTimeout);
+  const kw = wlAddInput.value.trim();
+  if (kw.length < 1) { wlAddDropdown.classList.remove('show'); return; }
+  wlAddTimeout = setTimeout(async () => {
+    try {
+      const r = await fetch('/api/search?keyword=' + encodeURIComponent(kw));
+      const data = await r.json();
+      if (!data.length) { wlAddDropdown.classList.remove('show'); return; }
+      wlAddDropdown.innerHTML = data.map(d =>
+        `<div class="wl-add-item" data-code="${d.code}" data-name="${d.name}">
+          <span><span style="color:var(--accent);font-family:'JetBrains Mono',monospace;font-weight:600;">${d.code}</span> ${d.name}</span>
+          <span style="color:var(--text-dim);font-size:12px;">${d.market}</span>
+        </div>`
+      ).join('');
+      wlAddDropdown.classList.add('show');
+      wlAddDropdown.querySelectorAll('.wl-add-item').forEach(el => {
+        el.addEventListener('click', async () => {
+          const code = el.dataset.code;
+          const name = el.dataset.name;
+          wlAddDropdown.classList.remove('show');
+          wlAddInput.value = '';
+          try {
+            const r = await fetch('/api/watchlist', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({symbol: code, name: name})
+            });
+            const res = await r.json();
+            if (res.error) { alert(res.error); return; }
+            refreshWatchlist();
+          } catch(e) { alert('添加失败'); }
+        });
+      });
+    } catch(e) {}
+  }, 300);
+});
+
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.wl-add-wrap')) wlAddDropdown.classList.remove('show');
+});
+
 // Auto-load, then start realtime
 window.addEventListener('DOMContentLoaded', async () => {
   await loadStrategies();
   initializing = false;
-  await doAnalyze();
-  startRealtime();
+  // Start in watchlist view
+  switchView('watchlist');
 });
 
 // 页面不可见时暂停，可见时恢复
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) { stopRealtime(); }
-  else if (!realtimeTimer) { startRealtime(); }
+  if (document.hidden) {
+    stopRealtime();
+    stopWatchlistRefresh();
+  } else {
+    if (currentView === 'watchlist') startWatchlistRefresh();
+    else if (chartsReady) startRealtime();
+  }
 });
 </script>
 </body>
