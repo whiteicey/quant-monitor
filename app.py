@@ -1003,6 +1003,17 @@ async function doAnalyze() {
   const end = getEndDate();
   if (!currentSymbol) { alert('请选择或输入股票'); return; }
 
+  // 确保详情视图可见（图表需要可见容器才能正确计算尺寸）
+  if (currentView !== 'detail') {
+    document.getElementById('view-watchlist').style.display = 'none';
+    document.getElementById('view-detail').style.display = 'block';
+    currentView = 'detail';
+    document.querySelectorAll('.view-tab').forEach(t => t.classList.remove('active'));
+    const dtTab = document.querySelector('.view-tab[data-view="detail"]');
+    if (dtTab) dtTab.classList.add('active');
+    stopWatchlistRefresh();
+  }
+
   showSpinner();
   try {
     const url = `/api/analyze?symbol=${currentSymbol}&start=${start}&end=${end}&period=${currentPeriod}${getSignalParams()}`;
@@ -1038,6 +1049,8 @@ async function doAnalyze() {
 
     mainChart.timeScale().fitContent();
     resizeCharts();
+    // 延迟再resize一次，确保display:none->block后尺寸正确
+    setTimeout(() => { resizeCharts(); mainChart.timeScale().fitContent(); }, 50);
 
     // Sidebar
     const s = data.signal;
@@ -1328,6 +1341,8 @@ function switchView(view) {
     wlView.style.display = 'none';
     dtView.style.display = 'block';
     stopWatchlistRefresh();
+    // 延迟一帧让DOM渲染完再resize图表
+    requestAnimationFrame(() => { resizeCharts(); });
     if (chartsReady) startRealtime();
   }
 }
