@@ -600,7 +600,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .view-tab:hover:not(.active) { color:var(--text); background:var(--bg4); }
 
   /* Watchlist view */
-  #view-watchlist { display:block; padding:10px; }
+  #view-watchlist { display:block; padding:10px; width:100%; overflow-y:auto; }
   #view-detail { display:none; }
   .wl-header { display:flex; align-items:center; gap:10px; margin-bottom:12px; flex-wrap:wrap; }
   .wl-header h2 { font-size:16px; color:var(--accent2); font-weight:700; }
@@ -742,8 +742,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
   </div>
 
   <!-- 个股详情视图 -->
-  <div id="view-detail" style="display:none;">
-    <div style="display:flex;width:100%;">
+  <div id="view-detail" style="display:none;flex:1;min-width:0;overflow:hidden;">
+    <div style="display:flex;width:100%;height:100%;">
   <div class="chart-area">
     <div class="chart-box"><div class="chart-label">K线 / EMA / 布林带</div><div id="chart-main"></div></div>
     <div class="chart-box"><div class="chart-label">MACD</div><div id="chart-macd"></div></div>
@@ -1006,7 +1006,7 @@ async function doAnalyze() {
   // 确保详情视图可见（图表需要可见容器才能正确计算尺寸）
   if (currentView !== 'detail') {
     document.getElementById('view-watchlist').style.display = 'none';
-    document.getElementById('view-detail').style.display = 'block';
+    document.getElementById('view-detail').style.display = 'flex';
     currentView = 'detail';
     document.querySelectorAll('.view-tab').forEach(t => t.classList.remove('active'));
     const dtTab = document.querySelector('.view-tab[data-view="detail"]');
@@ -1339,7 +1339,7 @@ function switchView(view) {
     refreshWatchlist();
   } else {
     wlView.style.display = 'none';
-    dtView.style.display = 'block';
+    dtView.style.display = 'flex';
     stopWatchlistRefresh();
     // 延迟一帧让DOM渲染完再resize图表
     requestAnimationFrame(() => { resizeCharts(); });
