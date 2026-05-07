@@ -19,6 +19,7 @@ class BacktestResult:
     sharpe_ratio: float
     trades: pd.DataFrame      # 交易明细
     strategy_name: str = ""   # 策略名称
+    equity_curve: list = None  # [{"time": int, "value": float}, ...]
 
 
 # ============================================================
@@ -367,6 +368,12 @@ def backtest(
     loss_trades = len([t for t in trades if t["pnl"] <= 0])
     win_rate = (profit_trades / len(trades) * 100) if trades else 0
 
+    # 构造权益曲线数据
+    equity_data = []
+    for i in range(len(signals_df)):
+        ts = int(signals_df.index[i].timestamp())
+        equity_data.append({"time": ts, "value": round(eq_curve[i], 2)})
+
     return BacktestResult(
         total_return=round(total_return, 2),
         annual_return=round(annual_return, 2),
@@ -378,4 +385,115 @@ def backtest(
         sharpe_ratio=round(sharpe, 2),
         trades=trades_df,
         strategy_name=strategy_name,
+        equity_curve=equity_data,
     )
+
+
+def backtest_compare(
+    df: pd.DataFrame,
+    params: SignalParams = None,
+    initial_capital: float = 1000000.0,
+    commission: float = 0.001,
+    stamp_tax: float = 0.001,
+    strategy_ids: list = None,
+) -> list:
+    """
+    对指定策略跑回测并返回对比数据
+    strategy_ids: 要对比的策略ID列表，None则跑全部
+    """
+    if strategy_ids is None:
+        strategy_ids = list(STRATEGIES.keys())
+
+    # compute_signals只算一次，所有策略共用
+    signals_df = compute_signals(df, params)
+
+    results = []
+    for sid in strategy_ids:
+        if sid not in STRATEGIES:
+            continue
+        strategy_name, strategy_fn, _ = STRATEGIES[sid]
+        buy_mask, sell_mask = strategy_fn(signals_df)
+
+        # 跑回测循环（内联，避免重复compute_signals）
+        capital = initial_capital
+        position = 0
+        entry_price = 0.0
+        trades_count = 0
+        wins = 0
+
+        eq_curve = []
+        eq_cap = initial_capital
+        eq_pos = 0
+
+        for i in range(len(signals_df)):
+            row = signals_df.iloc[i]
+            price = row["close"]
+            is_buy = bool(buy_mask.iloc[i]) if hasattr(buy_mask, 'iloc') else bool(buy_mask[i])
+            is_sell = bool(sell_mask.iloc[i]) if hasattr(sell_mask, 'iloc') else bool(sell_mask[i])
+
+            # 权益曲线
+            eq_curve.append(eq_cap + eq_pos * price)
+
+            if is_buy and eq_pos == 0:
+                max_sh = int(eq_cap / (price * (1 + commission)))
+                sh = (max_sh // 100) * 100
+                if sh == 0 and max_sh >= 1:
+                    sh = max_sh
+                if sh > 0:
+                    eq_cap -= sh * price * (1 + commission)
+                    eq_pos = sh
+
+                    # 同步主交易逻辑
+                    if position == 0:
+                        max_shares = int(capital / (price * (1 + commission)))
+                        shares = (max_shares // 100) * 100
+                        if shares == 0 and max_shares >= 1:
+                            shares = max_shares
+                        if shares > 0:
+                            capital -= shares * price * (1 + commission)
+                            position = shares
+                            entry_price = price
+
+            elif is_sell and eq_pos > 0:
+                eq_cap += eq_pos * price * (1 - commission - stamp_tax)
+                eq_pos = 0
+
+                if position > 0:
+                    revenue = position * price * (1 - commission - stamp_tax)
+                    if price > entry_price:
+                        wins += 1
+                    trades_count += 1
+                    capital += revenue
+                    position = 0
+
+        final_value = eq_cap + eq_pos * signals_df.iloc[-1]["close"]
+        total_return = (final_value / initial_capital - 1) * 100
+        days = (signals_df.index[-1] - signals_df.index[0]).days
+        annual_return = ((final_value / initial_capital) ** (365.0 / max(days, 1)) - 1) * 100 if days > 0 else 0
+
+        eq_series = pd.Series(eq_curve)
+        peak = eq_series.cummax()
+        drawdown = ((eq_series - peak) / peak * 100).min()
+        daily_rets = eq_series.pct_change().dropna()
+        sharpe = (daily_rets.mean() / daily_rets.std() * np.sqrt(252)) if daily_rets.std() > 0 else 0
+        win_rate = (wins / trades_count * 100) if trades_count > 0 else 0
+
+        equity_data = []
+        for i in range(len(signals_df)):
+            ts = int(signals_df.index[i].timestamp())
+            equity_data.append({"time": ts, "value": round(eq_curve[i], 2)})
+
+        results.append({
+            "strategy_id": sid,
+            "strategy_name": strategy_name,
+            "total_return": round(total_return, 2),
+            "annual_return": round(annual_return, 2),
+            "max_drawdown": round(drawdown, 2),
+            "win_rate": round(win_rate, 2),
+            "total_trades": trades_count,
+            "sharpe_ratio": round(sharpe, 2),
+            "equity_curve": equity_data,
+        })
+
+    results.sort(key=lambda x: x["total_return"], reverse=True)
+    return results

@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from src.data import fetch_stock_daily, fetch_stock_info, search_stock, fetch_realtime_quote, fetch_realtime_quotes_batch
 from src.signals import compute_signals, get_latest_signal, SignalParams
-from src.backtest import backtest, get_strategy_list, get_preset_list
+from src.backtest import backtest, get_strategy_list, get_preset_list, backtest_compare
 
 app = Flask(__name__)
 
@@ -467,7 +467,50 @@ def api_backtest():
         "total_trades": result.total_trades, "profit_trades": result.profit_trades,
         "loss_trades": result.loss_trades, "sharpe_ratio": result.sharpe_ratio,
         "trades": trades_list,
+        "equity_curve": result.equity_curve or [],
     })
+
+
+@app.route("/api/backtest/compare")
+def api_backtest_compare():
+    symbol = request.args.get("symbol", "688110").strip()
+    start = request.args.get("start", "20240101").strip()
+    end = request.args.get("end", "").strip()
+    strategies_str = request.args.get("strategies", "").strip()
+    
+    strategy_ids = [s.strip() for s in strategies_str.split(",") if s.strip()] if strategies_str else None
+
+    p = SignalParams()
+    for k in ["fast_length", "slow_length", "signal_length", "rsi_length", "bb_length", "volume_length", "atr_length"]:
+        v = request.args.get(k)
+        if v:
+            try: setattr(p, k, int(v))
+            except: pass
+    v = request.args.get("bb_mult")
+    if v:
+        try: p.bb_mult = float(v)
+        except: pass
+    v = request.args.get("price_mode")
+    if v:
+        p.price_mode = v
+
+    initial_capital = float(request.args.get("initial_capital", "1000000"))
+    commission = float(request.args.get("commission", "0.001"))
+    stamp_tax = float(request.args.get("stamp_tax", "0.001"))
+
+    try:
+        df = fetch_stock_daily(symbol, start, end)
+    except Exception as e:
+        return jsonify({"error": f"数据获取失败: {e}"}), 400
+
+    try:
+        results = backtest_compare(df, params=p, initial_capital=initial_capital,
+                                   commission=commission, stamp_tax=stamp_tax,
+                                   strategy_ids=strategy_ids)
+    except Exception as e:
+        return jsonify({"error": f"策略对比失败: {e}"}), 500
+
+    return jsonify(results)
 
 
 # ---------------------------------------------------------------------------
@@ -639,6 +682,38 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .wl-empty p { font-size:15px; margin-bottom:8px; }
   .wl-empty span { font-size:12px; }
 
+  /* Equity chart */
+  #equity-box { display:none; margin:12px 0; }
+  #chart-equity { height:250px; }
+
+  /* Compare modal */
+  .modal-overlay { position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,.7); display:none; z-index:1000; justify-content:center; align-items:center; }
+  .modal-overlay.show { display:flex; }
+  .modal-box { background:var(--bg2); border:1px solid var(--border2); border-radius:12px; padding:20px; width:480px; max-width:90vw; max-height:80vh; overflow-y:auto; }
+  .modal-title { font-size:16px; font-weight:700; color:var(--accent2); margin-bottom:14px; }
+  .modal-actions { display:flex; gap:8px; margin-bottom:12px; }
+  .modal-actions button { padding:4px 12px; border:1px solid var(--border); background:var(--bg3); color:var(--text-dim); border-radius:4px; cursor:pointer; font-size:12px; }
+  .modal-actions button:hover { color:var(--text); border-color:var(--accent); }
+  .modal-strategies { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-bottom:16px; }
+  .modal-strat-item { display:flex; align-items:center; gap:8px; padding:6px 8px; border-radius:6px; background:var(--bg3); cursor:pointer; font-size:13px; }
+  .modal-strat-item:hover { background:var(--bg4); }
+  .modal-strat-item input[type="checkbox"] { accent-color:var(--accent); width:16px; height:16px; }
+  .modal-strat-item label { cursor:pointer; flex:1; }
+  .modal-btns { display:flex; gap:10px; justify-content:flex-end; }
+  .modal-btns button { padding:8px 20px; border:none; border-radius:6px; font-size:14px; font-weight:600; cursor:pointer; }
+
+  /* Compare results */
+  #compare-box { display:none; margin:12px 0; }
+  #chart-compare { height:300px; }
+  .compare-table { width:100%; border-collapse:collapse; margin-top:10px; font-size:12px; }
+  .compare-table th { background:var(--bg3); color:var(--text-dim); padding:7px 8px; text-align:center; border-bottom:1px solid var(--border); font-size:11px; }
+  .compare-table td { padding:6px 8px; text-align:center; border-bottom:1px solid rgba(255,255,255,.04); font-family:'JetBrains Mono',monospace; }
+  .compare-table tr:first-child td { color:var(--gold); font-weight:700; }
+  .compare-legend { display:flex; flex-wrap:wrap; gap:8px; margin:8px 0; font-size:12px; }
+  .compare-legend-item { display:flex; align-items:center; gap:4px; cursor:pointer; padding:2px 6px; border-radius:4px; }
+  .compare-legend-item:hover { background:var(--bg4); }
+  .compare-legend-dot { width:12px; height:4px; border-radius:2px; }
+
   @media(max-width:1000px){
     .main { flex-direction:column; height:auto; overflow:visible; }
     .sidebar { width:100%; min-width:0; border-left:none; border-top:1px solid var(--border); max-height:none; }
@@ -660,6 +735,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
     #realtime-change { font-size:12px; }
     .wl-table .td-price { font-size:14px; }
     .wl-table th, .wl-table td { padding:6px 6px; font-size:12px; }
+    .modal-strategies { grid-template-columns:1fr; }
+    .modal-box { width:95vw; }
+    #chart-equity { height:200px; }
+    #chart-compare { height:220px; }
   }
   @media(max-width:500px){
     .topbar { gap:4px; padding:6px 6px; }
@@ -670,6 +749,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     .params-grid { grid-template-columns:1fr; }
     .wl-header { gap:6px; }
     .wl-add-wrap input { width:150px; }
+    .compare-table th, .compare-table td { padding:4px 4px; font-size:11px; }
   }
 </style>
 </head>
@@ -707,6 +787,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
   <button class="btn btn-primary" onclick="doAnalyze()">分析</button>
   <button class="btn btn-warn" onclick="doBacktest()">回测</button>
+  <button class="btn" style="background:var(--purple);color:#fff;" onclick="showCompareModal()">策略对比</button>
 
   <span class="stock-name" id="stock-name"></span>
   <span id="realtime-price" style="font-family:'JetBrains Mono',monospace;font-size:20px;font-weight:700;margin-left:8px;"></span>
@@ -760,8 +841,18 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <div id="backtest-panel">
       <h3 style="color:var(--gold);margin-bottom:10px;font-size:15px;">回测结果 <span id="bt-strategy-label" style="color:var(--accent);font-size:13px;"></span></h3>
       <div class="bt-grid" id="bt-grid"></div>
+      <div id="equity-box">
+        <div class="chart-label" style="margin-top:8px;">权益曲线</div>
+        <div id="chart-equity"></div>
+      </div>
       <h4 style="margin:10px 0 4px;color:var(--text-dim);font-size:13px;">交易明细</h4>
       <div style="overflow-x:auto;"><table class="bt-trades" id="bt-trades"></table></div>
+      <div id="compare-box">
+        <h3 style="color:var(--purple);margin:12px 0 8px;font-size:15px;">策略对比</h3>
+        <div class="compare-legend" id="compare-legend"></div>
+        <div class="chart-box"><div id="chart-compare"></div></div>
+        <table class="compare-table" id="compare-table"></table>
+      </div>
     </div>
   </div>
 
@@ -843,6 +934,21 @@ HTML_PAGE = r"""<!DOCTYPE html>
       </div>
     </div>
   </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="compare-modal">
+  <div class="modal-box">
+    <div class="modal-title">选择要对比的策略</div>
+    <div class="modal-actions">
+      <button onclick="compareSelectAll()">全选</button>
+      <button onclick="compareClearAll()">清空</button>
+    </div>
+    <div class="modal-strategies" id="compare-strategies"></div>
+    <div class="modal-btns">
+      <button style="background:var(--bg3);color:var(--text-dim);" onclick="hideCompareModal()">取消</button>
+      <button style="background:var(--purple);color:#fff;" onclick="doCompare()">开始对比</button>
     </div>
   </div>
 </div>
@@ -1144,6 +1250,11 @@ async function doBacktest() {
       table.innerHTML = '<tr><td style="padding:20px;color:var(--text-dim)">无交易记录</td></tr>';
     }
 
+    // 画权益曲线
+    drawEquityCurve(data.equity_curve);
+    // 隐藏对比区域
+    document.getElementById('compare-box').style.display = 'none';
+
     panel.scrollIntoView({behavior:'smooth'});
   } catch(e) { alert('回测失败: '+e.message); } finally { hideSpinner(); }
 }
@@ -1326,6 +1437,158 @@ function applyPreset(presetId) {
   currentPriceMode = p.price_mode || 'default';
   // 参数变化后自动重新分析（初始化阶段跳过）
   if (!initializing) doAnalyze();
+}
+
+// ---- Equity & Compare Charts ----
+let equityChart = null;
+let compareChart = null;
+let compareSeries = [];
+
+const COMPARE_COLORS = [
+  '#4f8ff7', '#ff4757', '#00d98b', '#ffb347', '#a78bfa', '#ff6b9d',
+  '#36d7b7', '#f7dc6f', '#bb8fce', '#85c1e9', '#f0b27a', '#73c6b6'
+];
+
+function drawEquityCurve(data) {
+  const box = document.getElementById('equity-box');
+  if (!data || !data.length) { box.style.display = 'none'; return; }
+  box.style.display = 'block';
+
+  const el = document.getElementById('chart-equity');
+  if (equityChart) { equityChart.remove(); equityChart = null; }
+  equityChart = LightweightCharts.createChart(el, {
+    layout: { background:{color:CHART_BG}, textColor:TEXT_COLOR, fontFamily:"'Noto Sans SC','JetBrains Mono',sans-serif", fontSize:12 },
+    grid: { vertLines:{color:GRID_COLOR}, horzLines:{color:GRID_COLOR} },
+    rightPriceScale: { borderColor:GRID_COLOR },
+    timeScale: { borderColor:GRID_COLOR, timeVisible:false },
+    width: el.clientWidth, height: 250,
+  });
+
+  const areaSeries = equityChart.addAreaSeries({
+    lineColor: '#4f8ff7', topColor: 'rgba(79,143,247,0.3)', bottomColor: 'rgba(79,143,247,0.02)', lineWidth: 2,
+  });
+  areaSeries.setData(data);
+
+  // 初始资金基准线
+  const baseline = equityChart.addLineSeries({ color:'rgba(255,255,255,0.15)', lineWidth:1, lineStyle:2 });
+  baseline.setData([
+    { time: data[0].time, value: data[0].value },
+    { time: data[data.length-1].time, value: data[0].value },
+  ]);
+
+  equityChart.timeScale().fitContent();
+}
+
+// ---- Compare Modal ----
+function showCompareModal() {
+  const modal = document.getElementById('compare-modal');
+  const container = document.getElementById('compare-strategies');
+  // Populate checkboxes from strategyData
+  container.innerHTML = strategyData.map(s =>
+    `<div class="modal-strat-item">
+      <input type="checkbox" id="cmp-${s.id}" value="${s.id}" checked>
+      <label for="cmp-${s.id}">${s.name}</label>
+    </div>`
+  ).join('');
+  modal.classList.add('show');
+}
+function hideCompareModal() { document.getElementById('compare-modal').classList.remove('show'); }
+function compareSelectAll() { document.querySelectorAll('#compare-strategies input').forEach(cb => cb.checked = true); }
+function compareClearAll() { document.querySelectorAll('#compare-strategies input').forEach(cb => cb.checked = false); }
+
+async function doCompare() {
+  const selected = [];
+  document.querySelectorAll('#compare-strategies input:checked').forEach(cb => selected.push(cb.value));
+  if (selected.length < 1) { alert('请至少选择一个策略'); return; }
+  hideCompareModal();
+
+  const start = getStartDate();
+  const end = getEndDate();
+  if (!currentSymbol) { alert('请选择股票'); return; }
+
+  showSpinner();
+  try {
+    const url = `/api/backtest/compare?symbol=${currentSymbol}&start=${start}&end=${end}&strategies=${selected.join(',')}` +
+      `&initial_capital=${g('bt-capital')}&commission=${g('bt-commission')}&stamp_tax=${g('bt-tax')}` +
+      getSignalParams();
+    const resp = await fetch(url);
+    const data = await resp.json();
+    if (data.error) { alert(data.error); hideSpinner(); return; }
+
+    // Show results
+    const panel = document.getElementById('backtest-panel');
+    panel.style.display = 'block';
+    document.getElementById('equity-box').style.display = 'none';
+    document.getElementById('bt-grid').innerHTML = '';
+    document.getElementById('bt-trades').innerHTML = '';
+    document.getElementById('bt-strategy-label').textContent = '';
+
+    const cbox = document.getElementById('compare-box');
+    cbox.style.display = 'block';
+
+    // Draw compare chart
+    const cel = document.getElementById('chart-compare');
+    if (compareChart) { compareChart.remove(); compareChart = null; }
+    compareSeries = [];
+    compareChart = LightweightCharts.createChart(cel, {
+      layout: { background:{color:CHART_BG}, textColor:TEXT_COLOR, fontFamily:"'Noto Sans SC','JetBrains Mono',sans-serif", fontSize:12 },
+      grid: { vertLines:{color:GRID_COLOR}, horzLines:{color:GRID_COLOR} },
+      rightPriceScale: { borderColor:GRID_COLOR },
+      timeScale: { borderColor:GRID_COLOR, timeVisible:false },
+      width: cel.clientWidth, height: 300,
+    });
+
+    // Legend
+    const legendEl = document.getElementById('compare-legend');
+    legendEl.innerHTML = '';
+
+    data.forEach((item, idx) => {
+      const color = COMPARE_COLORS[idx % COMPARE_COLORS.length];
+      const series = compareChart.addLineSeries({ color: color, lineWidth: 2, title: item.strategy_name });
+      series.setData(item.equity_curve);
+      compareSeries.push({ series, visible: true });
+
+      // Clickable legend
+      const leg = document.createElement('div');
+      leg.className = 'compare-legend-item';
+      leg.innerHTML = `<span class="compare-legend-dot" style="background:${color}"></span>${item.strategy_name}`;
+      leg.style.opacity = '1';
+      leg.addEventListener('click', () => {
+        const s = compareSeries[idx];
+        s.visible = !s.visible;
+        s.series.applyOptions({ visible: s.visible });
+        leg.style.opacity = s.visible ? '1' : '0.3';
+      });
+      legendEl.appendChild(leg);
+    });
+
+    compareChart.timeScale().fitContent();
+
+    // Rank table
+    const table = document.getElementById('compare-table');
+    let html = '<thead><tr><th>#</th><th>策略</th><th>总收益</th><th>年化</th><th>最大回撤</th><th>胜率</th><th>Sharpe</th><th>交易次数</th></tr></thead><tbody>';
+    data.forEach((item, idx) => {
+      const retCls = item.total_return >= 0 ? 'val-green' : 'val-red';
+      const annCls = item.annual_return >= 0 ? 'val-green' : 'val-red';
+      const wrCls = item.win_rate >= 50 ? 'val-green' : 'val-red';
+      const spCls = item.sharpe_ratio >= 1 ? 'val-green' : '';
+      const dot = `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${COMPARE_COLORS[idx % COMPARE_COLORS.length]};margin-right:4px;"></span>`;
+      html += `<tr>
+        <td>${idx+1}</td>
+        <td style="text-align:left;">${dot}${item.strategy_name}</td>
+        <td class="${retCls}">${item.total_return}%</td>
+        <td class="${annCls}">${item.annual_return}%</td>
+        <td class="val-red">${item.max_drawdown}%</td>
+        <td class="${wrCls}">${item.win_rate}%</td>
+        <td class="${spCls}">${item.sharpe_ratio}</td>
+        <td>${item.total_trades}</td>
+      </tr>`;
+    });
+    html += '</tbody>';
+    table.innerHTML = html;
+
+    panel.scrollIntoView({behavior:'smooth'});
+  } catch(e) { alert('策略对比失败: '+e.message); } finally { hideSpinner(); }
 }
 
 // ---- Watchlist ----
