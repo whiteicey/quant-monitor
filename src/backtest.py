@@ -331,12 +331,13 @@ def backtest(
             })
             position = 0
 
-    # 未平仓持仓记录为最后一笔交易
+    # 未平仓持仓：按当前市价记录，不扣卖出手续费（因为还没卖）
     final_price = signals_df.iloc[-1]["close"]
     final_date = signals_df.index[-1]
     if position > 0:
-        revenue = position * final_price * (1 - commission - stamp_tax)
-        pnl = revenue - position * entry_price * (1 + commission)
+        market_value = position * final_price  # 当前市值，不扣手续费
+        cost = position * entry_price * (1 + commission)  # 买入成本（含买入手续费）
+        pnl = market_value - cost
         trades.append({
             "buy_date": str(entry_date.date()) if hasattr(entry_date, 'date') else str(entry_date)[:10],
             "sell_date": str(final_date.date()) + "(未平仓)" if hasattr(final_date, 'date') else str(final_date)[:10] + "(未平仓)",
@@ -346,7 +347,7 @@ def backtest(
             "pnl": round(pnl, 2),
             "return_pct": round((final_price / entry_price - 1) * 100, 2),
         })
-        capital += revenue
+        capital += market_value  # 按市值计入，不扣卖出费用
         position = 0
 
     final_value = capital
@@ -465,16 +466,16 @@ def backtest_compare(
                     capital += revenue
                     position = 0
 
-        # 未平仓持仓计入最后一笔
+        # 未平仓持仓：按市值计入，不扣卖出手续费
         final_price_c = signals_df.iloc[-1]["close"]
         if eq_pos > 0:
-            eq_cap += eq_pos * final_price_c * (1 - commission - stamp_tax)
+            eq_cap += eq_pos * final_price_c  # 市值，不扣费
             eq_pos = 0
         if position > 0:
             if final_price_c > entry_price:
                 wins += 1
             trades_count += 1
-            capital += position * final_price_c * (1 - commission - stamp_tax)
+            capital += position * final_price_c  # 市值，不扣费
             position = 0
 
         final_value = eq_cap
