@@ -18,6 +18,7 @@ class SignalParams:
     bb_mult: float = 2.0
     volume_length: int = 5
     atr_length: int = 14
+    price_mode: str = "default"  # 关键价位计算模式
 
 
 @dataclass
@@ -144,13 +145,56 @@ def compute_signals(df: pd.DataFrame, params: SignalParams = None) -> pd.DataFra
     df["weak_buy"] = df["bull_score"] >= 4
     df["weak_sell"] = df["bear_score"] >= 4
 
-    # --- 推荐价位（基于布林带和ATR动态计算） ---
-    # 买入参考：布林带下轨（价格触及下轨是买入时机）
-    df["rec_buy_price"] = df["bb_lower"]
-    # 卖出参考：布林带上轨（价格触及上轨是卖出时机）
-    df["rec_sell_price"] = df["bb_upper"]
-    # 止损：当前价 - 2倍ATR（基于波动率的动态止损）
-    df["stop_loss"] = c - 2 * df["atr"]
+    # --- 推荐价位（按price_mode选择计算方式） ---
+    mode = params.price_mode
+
+    if mode == "bollinger":
+        # 布林带模式：下轨买入，上轨卖出，中轨止损
+        df["rec_buy_price"] = df["bb_lower"]
+        df["rec_sell_price"] = df["bb_upper"]
+        df["stop_loss"] = df["bb_basis"] - 0.5 * (df["bb_basis"] - df["bb_lower"])
+
+    elif mode == "atr_trend":
+        # ATR趋势模式：EMA回踩买入，EMA上方+ATR卖出，EMA下方-ATR止损
+        df["rec_buy_price"] = df["slow_ema"] - 0.5 * df["atr"]
+        df["rec_sell_price"] = df["fast_ema"] + 2 * df["atr"]
+        df["stop_loss"] = df["slow_ema"] - 2 * df["atr"]
+
+    elif mode == "macd_momentum":
+        # MACD动量模式：下轨+ATR区间买入，上轨卖出，快EMA-1.5ATR止损
+        df["rec_buy_price"] = df["bb_lower"] + 0.5 * df["atr"]
+        df["rec_sell_price"] = df["bb_upper"] - 0.5 * df["atr"]
+        df["stop_loss"] = df["fast_ema"] - 1.5 * df["atr"]
+
+    elif mode == "rsi_reversal":
+        # RSI反转模式：支撑位附近买入，阻力位附近卖出，支撑位下方止损
+        df["rec_buy_price"] = df["support"] * 1.01
+        df["rec_sell_price"] = df["resistance"] * 0.99
+        df["stop_loss"] = df["support"] * 0.97
+
+    elif mode == "volume_break":
+        # 放量突破模式：阻力位突破后回踩买入，前高+ATR卖出，布林中轨止损
+        df["rec_buy_price"] = df["resistance"] * 0.99
+        df["rec_sell_price"] = df["resistance"] + 2 * df["atr"]
+        df["stop_loss"] = df["bb_basis"]
+
+    elif mode == "conservative":
+        # 稳健模式：布林中轨下方买入，中轨上方卖出，宽止损(3ATR)
+        df["rec_buy_price"] = df["bb_basis"] - 0.5 * (df["bb_basis"] - df["bb_lower"])
+        df["rec_sell_price"] = df["bb_basis"] + 0.5 * (df["bb_upper"] - df["bb_basis"])
+        df["stop_loss"] = c - 3 * df["atr"]
+
+    elif mode == "support_resistance":
+        # 支撑阻力模式：支撑位买入，阻力位卖出，支撑位-1ATR止损
+        df["rec_buy_price"] = df["support"] * 1.005
+        df["rec_sell_price"] = df["resistance"] * 0.995
+        df["stop_loss"] = df["support"] - df["atr"]
+
+    else:
+        # default: 综合模式——布林带+ATR
+        df["rec_buy_price"] = df["bb_lower"]
+        df["rec_sell_price"] = df["bb_upper"]
+        df["stop_loss"] = c - 2 * df["atr"]
 
     # --- 趋势判断 ---
     df["trend"] = np.where(

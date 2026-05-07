@@ -104,6 +104,9 @@ def api_realtime():
     if v:
         try: p.bb_mult = float(v)
         except: pass
+    v = request.args.get("price_mode")
+    if v:
+        p.price_mode = v
 
     try:
         quote = fetch_realtime_quote(symbol)
@@ -198,6 +201,9 @@ def api_analyze():
     if v:
         try: p.bb_mult = float(v)
         except: pass
+    v = request.args.get("price_mode")
+    if v:
+        p.price_mode = v
 
     try:
         name = fetch_stock_info(symbol)
@@ -421,6 +427,9 @@ def api_backtest():
     if v:
         try: p.bb_mult = float(v)
         except: pass
+    v = request.args.get("price_mode")
+    if v:
+        p.price_mode = v
 
     initial_capital = float(request.args.get("initial_capital", "1000000"))
     commission = float(request.args.get("commission", "0.001"))
@@ -933,8 +942,9 @@ function getEndDate() {
 document.getElementById('inp-end').value = new Date().toISOString().split('T')[0];
 
 // ---- Params helper ----
+let currentPriceMode = 'default';
 function getSignalParams() {
-  return `&fast_length=${g('p-fast')}&slow_length=${g('p-slow')}&signal_length=${g('p-signal')}&rsi_length=${g('p-rsi')}&bb_length=${g('p-bb')}&bb_mult=${g('p-bbmult')}&volume_length=${g('p-vol')}&atr_length=${g('p-atr')}`;
+  return `&fast_length=${g('p-fast')}&slow_length=${g('p-slow')}&signal_length=${g('p-signal')}&rsi_length=${g('p-rsi')}&bb_length=${g('p-bb')}&bb_mult=${g('p-bbmult')}&volume_length=${g('p-vol')}&atr_length=${g('p-atr')}&price_mode=${currentPriceMode}`;
 }
 function g(id) { return document.getElementById(id).value; }
 
@@ -1313,6 +1323,7 @@ function applyPreset(presetId) {
   document.getElementById('p-bbmult').value = p.bb_mult;
   document.getElementById('p-vol').value = p.volume_length;
   document.getElementById('p-atr').value = p.atr_length;
+  currentPriceMode = p.price_mode || 'default';
   // 参数变化后自动重新分析（初始化阶段跳过）
   if (!initializing) doAnalyze();
 }
