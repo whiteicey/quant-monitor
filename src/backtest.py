@@ -292,6 +292,7 @@ def backtest(
     entry_price = 0.0
     entry_date = None
     trades = []
+    eq_curve = []  # 权益曲线（每根K线一个值）
 
     for i in range(len(signals_df)):
         row = signals_df.iloc[i]
@@ -299,6 +300,9 @@ def backtest(
         date = signals_df.index[i]
         is_buy = bool(buy_mask.iloc[i]) if hasattr(buy_mask, 'iloc') else bool(buy_mask[i])
         is_sell = bool(sell_mask.iloc[i]) if hasattr(sell_mask, 'iloc') else bool(sell_mask[i])
+
+        # 记录当前净值（未实现盈亏也计入）
+        eq_curve.append(capital + position * price)
 
         if is_buy and position == 0:
             max_shares = int(capital / (price * (1 + commission)))
@@ -327,35 +331,30 @@ def backtest(
             })
             position = 0
 
+    # 未平仓持仓记录为最后一笔交易
     final_price = signals_df.iloc[-1]["close"]
-    final_value = capital + position * final_price
+    final_date = signals_df.index[-1]
+    if position > 0:
+        revenue = position * final_price * (1 - commission - stamp_tax)
+        pnl = revenue - position * entry_price * (1 + commission)
+        trades.append({
+            "buy_date": str(entry_date.date()) if hasattr(entry_date, 'date') else str(entry_date)[:10],
+            "sell_date": str(final_date.date()) + "(未平仓)" if hasattr(final_date, 'date') else str(final_date)[:10] + "(未平仓)",
+            "entry_price": entry_price,
+            "exit_price": final_price,
+            "shares": position,
+            "pnl": round(pnl, 2),
+            "return_pct": round((final_price / entry_price - 1) * 100, 2),
+        })
+        capital += revenue
+        position = 0
 
+    final_value = capital
     total_return = (final_value / initial_capital - 1) * 100
     days = (signals_df.index[-1] - signals_df.index[0]).days
     annual_return = ((final_value / initial_capital) ** (365.0 / max(days, 1)) - 1) * 100 if days > 0 else 0
 
-    # 最大回撤
-    eq_curve = []
-    eq_cap = initial_capital
-    eq_pos = 0
-    for i in range(len(signals_df)):
-        row = signals_df.iloc[i]
-        price = row["close"]
-        eq_curve.append(eq_cap + eq_pos * price)
-        is_buy = bool(buy_mask.iloc[i]) if hasattr(buy_mask, 'iloc') else bool(buy_mask[i])
-        is_sell = bool(sell_mask.iloc[i]) if hasattr(sell_mask, 'iloc') else bool(sell_mask[i])
-        if is_buy and eq_pos == 0:
-            max_sh = int(eq_cap / (price * (1 + commission)))
-            sh = (max_sh // 100) * 100
-            if sh == 0 and max_sh >= 1:
-                sh = max_sh
-            if sh > 0:
-                eq_cap -= sh * price * (1 + commission)
-                eq_pos = sh
-        elif is_sell and eq_pos > 0:
-            eq_cap += eq_pos * price * (1 - commission - stamp_tax)
-            eq_pos = 0
-
+    # 最大回撤 & Sharpe（直接用 eq_curve）
     eq_series = pd.Series(eq_curve)
     peak = eq_series.cummax()
     drawdown = ((eq_series - peak) / peak * 100).min()
@@ -466,7 +465,19 @@ def backtest_compare(
                     capital += revenue
                     position = 0
 
-        final_value = eq_cap + eq_pos * signals_df.iloc[-1]["close"]
+        # 未平仓持仓计入最后一笔
+        final_price_c = signals_df.iloc[-1]["close"]
+        if eq_pos > 0:
+            eq_cap += eq_pos * final_price_c * (1 - commission - stamp_tax)
+            eq_pos = 0
+        if position > 0:
+            if final_price_c > entry_price:
+                wins += 1
+            trades_count += 1
+            capital += position * final_price_c * (1 - commission - stamp_tax)
+            position = 0
+
+        final_value = eq_cap
         total_return = (final_value / initial_capital - 1) * 100
         days = (signals_df.index[-1] - signals_df.index[0]).days
         annual_return = ((final_value / initial_capital) ** (365.0 / max(days, 1)) - 1) * 100 if days > 0 else 0
