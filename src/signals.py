@@ -96,9 +96,10 @@ def compute_signals(df: pd.DataFrame, params: SignalParams = None) -> pd.DataFra
     df["atr"] = ind.atr(h, l, c, params.atr_length)
     df["high_volatility"] = df["atr"] > ind.sma(df["atr"], 20) * 1.2
 
-    # --- 支撑阻力 ---
-    df["resistance"] = h.rolling(50).max()
-    df["support"] = l.rolling(50).min()
+    # --- 支撑阻力（基于布林带周期） ---
+    _sr_period = max(params.bb_length * 2, 20)  # 布林带周期的2倍，至少20
+    df["resistance"] = h.rolling(_sr_period).max()
+    df["support"] = l.rolling(_sr_period).min()
     df["near_resistance"] = c >= df["resistance"] * 0.985
     df["near_support"] = c <= df["support"] * 1.015
 
@@ -143,10 +144,13 @@ def compute_signals(df: pd.DataFrame, params: SignalParams = None) -> pd.DataFra
     df["weak_buy"] = df["bull_score"] >= 4
     df["weak_sell"] = df["bear_score"] >= 4
 
-    # --- 推荐价位 ---
-    df["rec_buy_price"] = l.rolling(20).min() * 0.98
-    df["rec_sell_price"] = h.rolling(20).max() * 1.02
-    df["stop_loss"] = c * 0.95
+    # --- 推荐价位（基于布林带和ATR动态计算） ---
+    # 买入参考：布林带下轨（价格触及下轨是买入时机）
+    df["rec_buy_price"] = df["bb_lower"]
+    # 卖出参考：布林带上轨（价格触及上轨是卖出时机）
+    df["rec_sell_price"] = df["bb_upper"]
+    # 止损：当前价 - 2倍ATR（基于波动率的动态止损）
+    df["stop_loss"] = c - 2 * df["atr"]
 
     # --- 趋势判断 ---
     df["trend"] = np.where(
