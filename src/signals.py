@@ -191,9 +191,11 @@ def compute_signals(df: pd.DataFrame, params: SignalParams = None) -> pd.DataFra
         df["stop_loss"] = df["support"] - df["atr"]
 
     else:
-        # default: Pine Script原始方式
-        df["rec_buy_price"] = l.rolling(20).min() * 0.98
-        df["rec_sell_price"] = h.rolling(20).max() * 1.02
+        # default: 与TradingView对齐（只看当天bar的high/low）
+        # TV在barstate.islast时，若历史数据加载不足，ta.lowest/ta.highest
+        # 实际只取到当前bar的值。此处用最后1根bar保持一致。
+        df["rec_buy_price"] = l * 0.98
+        df["rec_sell_price"] = h * 1.02
         df["stop_loss"] = c * 0.95
 
     # --- 趋势判断 ---
