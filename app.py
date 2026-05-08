@@ -215,6 +215,31 @@ def api_analyze():
     except Exception as e:
         return jsonify({"error": f"数据获取失败: {e}"}), 400
 
+    # 合并实时行情到最后一根K线（和TradingView barstate.islast保持一致）
+    import pandas as pd
+    try:
+        quote = fetch_realtime_quote(symbol)
+        if quote and quote["price"] > 0 and len(df) > 0:
+            last_idx = df.index[-1]
+            today_str = quote["date"]
+            last_date_str = str(last_idx.date()) if hasattr(last_idx, 'date') else str(last_idx)[:10]
+            if today_str == last_date_str:
+                df.loc[last_idx, "close"] = quote["price"]
+                df.loc[last_idx, "high"] = max(df.loc[last_idx, "high"], quote["high"])
+                df.loc[last_idx, "low"] = min(df.loc[last_idx, "low"], quote["low"])
+                df.loc[last_idx, "volume"] = quote["volume"]
+            else:
+                new_idx = pd.to_datetime(today_str)
+                new_row = pd.DataFrame({
+                    "open": [quote["open"]], "high": [quote["high"]],
+                    "low": [quote["low"]], "close": [quote["price"]],
+                    "volume": [quote["volume"]],
+                }, index=[new_idx])
+                new_row.index.name = df.index.name
+                df = pd.concat([df, new_row])
+    except Exception:
+        pass  # 实时行情获取失败不影响分析，用历史数据继续
+
     try:
         sig_df = compute_signals(df, p)
         signal = get_latest_signal(sig_df)
