@@ -230,6 +230,12 @@ STRATEGY_RECOMMENDED_PRESET = {
     "ema_cross": "trend_fast",
 }
 
+# 反向映射：预设→推荐策略
+PRESET_RECOMMENDED_STRATEGY = {}
+for _s, _p in STRATEGY_RECOMMENDED_PRESET.items():
+    if _p not in PRESET_RECOMMENDED_STRATEGY:
+        PRESET_RECOMMENDED_STRATEGY[_p] = _s
+
 
 def get_strategy_list() -> list:
     """返回策略列表供前端使用（含推荐预设）"""
@@ -246,6 +252,7 @@ def get_preset_list() -> list:
     for k, (name, params, desc) in PARAM_PRESETS.items():
         result.append({
             "id": k, "name": name, "desc": desc,
+            "recommended_strategy": PRESET_RECOMMENDED_STRATEGY.get(k, ""),
             "params": {
                 "fast_length": params.fast_length,
                 "slow_length": params.slow_length,

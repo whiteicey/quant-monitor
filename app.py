@@ -1407,8 +1407,8 @@ async function loadStrategies() {
     const psel = document.getElementById('p-preset');
     const pdesc = document.getElementById('p-preset-desc');
     psel.innerHTML = presetData.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
-    psel._map = {};
-    presetData.forEach(p => psel._map[p.id] = p);
+    psel._map = {}; psel._strategies = {};
+    presetData.forEach(p => { psel._map[p.id] = p; if(p.recommended_strategy) psel._strategies[p.id] = p.recommended_strategy; });
     psel.addEventListener('change', () => { applyPreset(psel.value); });
     psel.value = 'default';
     pdesc.textContent = psel._map['default'] ? psel._map['default'].desc : '';
@@ -1435,6 +1435,16 @@ function applyPreset(presetId) {
   document.getElementById('p-vol').value = p.volume_length;
   document.getElementById('p-atr').value = p.atr_length;
   currentPriceMode = p.price_mode || 'default';
+  // 同步回测策略下拉框
+  const recStrategy = psel._strategies && psel._strategies[presetId];
+  if (recStrategy) {
+    const bsel = document.getElementById('bt-strategy');
+    if (bsel && bsel.value !== recStrategy) {
+      bsel.value = recStrategy;
+      const bdesc = document.getElementById('bt-strategy-desc');
+      if (bdesc && bsel._descs) bdesc.textContent = bsel._descs[recStrategy] || '';
+    }
+  }
   // 参数变化后自动重新分析（初始化阶段跳过）
   if (!initializing) doAnalyze();
 }

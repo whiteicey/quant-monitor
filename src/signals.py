@@ -191,10 +191,10 @@ def compute_signals(df: pd.DataFrame, params: SignalParams = None) -> pd.DataFra
         df["stop_loss"] = df["support"] - df["atr"]
 
     else:
-        # default: 综合模式——布林带+ATR
-        df["rec_buy_price"] = df["bb_lower"]
-        df["rec_sell_price"] = df["bb_upper"]
-        df["stop_loss"] = c - 2 * df["atr"]
+        # default: Pine Script原始方式
+        df["rec_buy_price"] = l.rolling(20).min() * 0.98
+        df["rec_sell_price"] = h.rolling(20).max() * 1.02
+        df["stop_loss"] = c * 0.95
 
     # --- 趋势判断 ---
     df["trend"] = np.where(
