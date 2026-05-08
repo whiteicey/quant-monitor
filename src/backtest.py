@@ -230,10 +230,13 @@ STRATEGY_RECOMMENDED_PRESET = {
     "ema_cross": "trend_fast",
 }
 
-# 反向映射：预设→推荐策略
+# 反向映射：预设→推荐策略（只保留1:1唯一映射）
+_preset_count = {}
+for _s, _p in STRATEGY_RECOMMENDED_PRESET.items():
+    _preset_count[_p] = _preset_count.get(_p, 0) + 1
 PRESET_RECOMMENDED_STRATEGY = {}
 for _s, _p in STRATEGY_RECOMMENDED_PRESET.items():
-    if _p not in PRESET_RECOMMENDED_STRATEGY:
+    if _preset_count[_p] == 1:  # 只有唯一对应关系才反向映射
         PRESET_RECOMMENDED_STRATEGY[_p] = _s
 
 

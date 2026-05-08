@@ -1391,13 +1391,17 @@ async function loadStrategies() {
     sel.innerHTML = strategyData.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
     sel._descs = {}; sel._presets = {};
     strategyData.forEach(s => { sel._descs[s.id] = s.desc; sel._presets[s.id] = s.recommended_preset; });
+    let _syncLock = false;  // 防止双向同步循环
     sel.addEventListener('change', () => {
       desc.textContent = sel._descs[sel.value] || '';
+      if (_syncLock) return;
       // 切换策略时自动切换推荐预设
       const recPreset = sel._presets[sel.value];
       if (recPreset) {
+        _syncLock = true;
         document.getElementById('p-preset').value = recPreset;
         applyPreset(recPreset);
+        _syncLock = false;
       }
     });
     sel.value = 'macd_rsi';
@@ -1409,7 +1413,12 @@ async function loadStrategies() {
     psel.innerHTML = presetData.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
     psel._map = {}; psel._strategies = {};
     presetData.forEach(p => { psel._map[p.id] = p; if(p.recommended_strategy) psel._strategies[p.id] = p.recommended_strategy; });
-    psel.addEventListener('change', () => { applyPreset(psel.value); });
+    psel.addEventListener('change', () => {
+      if (_syncLock) return;
+      _syncLock = true;
+      applyPreset(psel.value);
+      _syncLock = false;
+    });
     psel.value = 'default';
     pdesc.textContent = psel._map['default'] ? psel._map['default'].desc : '';
 
@@ -1435,11 +1444,11 @@ function applyPreset(presetId) {
   document.getElementById('p-vol').value = p.volume_length;
   document.getElementById('p-atr').value = p.atr_length;
   currentPriceMode = p.price_mode || 'default';
-  // 同步回测策略下拉框
+  // 同步回测策略下拉框（不触发change事件，由_syncLock控制）
   const recStrategy = psel._strategies && psel._strategies[presetId];
   if (recStrategy) {
     const bsel = document.getElementById('bt-strategy');
-    if (bsel && bsel.value !== recStrategy) {
+    if (bsel) {
       bsel.value = recStrategy;
       const bdesc = document.getElementById('bt-strategy-desc');
       if (bdesc && bsel._descs) bdesc.textContent = bsel._descs[recStrategy] || '';
