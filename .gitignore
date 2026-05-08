@@ -6,6 +6,7 @@ dist/
 build/
 *.spec
 *.png
+!screenshots/*.png
 *.exe
 .env
 .venv/
