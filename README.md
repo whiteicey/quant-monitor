@@ -83,13 +83,15 @@ python app.py
 
 | 模式 | 适用预设 | 买入参考 | 卖出参考 | 止损 |
 |------|---------|---------|---------|------|
-| default | 默认 | 布林带下轨 | 布林带上轨 | 现价 - 2×ATR |
+| default | 默认 | 当天最低价×0.98 | 当天最高价×1.02 | 收盘价×0.95 |
 | macd_momentum | MACD系列 | 下轨 + 0.5×ATR | 上轨 - 0.5×ATR | 快EMA - 1.5×ATR |
 | bollinger | 布林带系列 | 布林带下轨 | 布林带上轨 | 中轨与下轨中点 |
 | atr_trend | 趋势系列 | 慢EMA - 0.5×ATR | 快EMA + 2×ATR | 慢EMA - 2×ATR |
 | conservative | 稳健 | 中轨与下轨中点 | 中轨与上轨中点 | 现价 - 3×ATR |
 | rsi_reversal | RSI/超跌系列 | 支撑位×1.01 | 阻力位×0.99 | 支撑位×0.97 |
 | volume_break | 放量突破 | 阻力位×0.99 | 阻力位 + 2×ATR | 布林中轨 |
+
+> **关于 default 模式**：经与 TradingView 实际输出逐一比对验证，TV 的 Pine Script 在 `barstate.islast` 执行时，`ta.lowest(low, 20)` / `ta.highest(high, 20)` 因历史数据加载不足实际退化为只取当天 bar 的值。为与 TV 保持一致，default 模式的买入/卖出参考价基于当天 K 线的最低价和最高价计算。
 
 ### 股票搜索
 支持代码和名称模糊搜索，输入「茅台」或「600519」均可。
