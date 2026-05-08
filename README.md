@@ -12,10 +12,17 @@
 
 ## 截图预览
 
-<!-- TODO: 运行程序后截图放这里 -->
-<!-- ![自选股总览](screenshots/watchlist.png) -->
-<!-- ![个股详情](screenshots/detail.png) -->
-<!-- ![策略对比](screenshots/compare.png) -->
+### 自选股总览
+![自选股总览](screenshots/watchlist.png)
+
+### 个股详情分析
+![个股详情](screenshots/detail.png)
+
+### 回测结果 + 权益曲线
+![回测结果](screenshots/backtest.png)
+
+### 策略对比
+![策略对比](screenshots/compare.png)
 
 ## 快速开始
 
