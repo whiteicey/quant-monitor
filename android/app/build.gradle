@@ -20,7 +20,6 @@ android {
                 install "flask"
                 install "pandas"
                 install "numpy"
-                install "akshare"
                 install "requests"
             }
         }
