@@ -29,11 +29,19 @@ jobs:
           cp app.py android/app/src/main/python/
           cp -r src android/app/src/main/python/
       
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+      
+      - name: Generate Gradle Wrapper
+        working-directory: android
+        run: |
+          gradle wrapper --gradle-version 8.2
+      
       - name: Build APK
         working-directory: android
         run: |
-          chmod +x gradlew 2>/dev/null || true
-          ./gradlew assembleRelease --no-daemon
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon --stacktrace
       
       - name: Upload APK
         uses: actions/upload-artifact@v4
