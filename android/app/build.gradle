@@ -1,0 +1,48 @@
+plugins {
+    id 'com.android.application'
+    id 'com.chaquo.python'
+}
+
+android {
+    namespace 'com.whiteicey.quantmonitor'
+    compileSdk 34
+    
+    defaultConfig {
+        applicationId "com.whiteicey.quantmonitor"
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName "1.3.0"
+        
+        python {
+            buildPython "python3"
+            pip {
+                install "flask"
+                install "pandas"
+                install "numpy"
+                install "akshare"
+                install "requests"
+            }
+        }
+        
+        ndk {
+            abiFilters "arm64-v8a", "armeabi-v7a"
+        }
+    }
+    
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+    
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+}
+
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'androidx.webkit:webkit:1.8.0'
+}
