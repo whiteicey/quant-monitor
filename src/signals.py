@@ -49,6 +49,9 @@ def compute_signals(df: pd.DataFrame, params: SignalParams = None) -> pd.DataFra
     if params is None:
         params = SignalParams()
 
+    if len(df) == 0:
+        raise ValueError("数据为空，无法计算信号")
+
     df = df.copy()
     c, h, l, o, v = df["close"], df["high"], df["low"], df["open"], df["volume"]
 
@@ -112,7 +115,7 @@ def compute_signals(df: pd.DataFrame, params: SignalParams = None) -> pd.DataFra
     df["low_price_zone"] = df["price_position"] < 30
     df["high_price_zone"] = df["price_position"] > 70
 
-    # --- 多空评分(满分7) ---
+    # --- 多空评分(满分6) ---
     df["bull_score"] = (
         df["ema_bullish"].astype(int)
         + df["macd_bullish"].astype(int)

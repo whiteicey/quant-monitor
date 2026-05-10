@@ -44,6 +44,16 @@ def _cache_get(key, category="daily"):
 def _cache_set(key, data):
     """写入缓存"""
     _cache[key] = {"data": data, "ts": _time.time()}
+    if len(_cache) > 200:
+        _cache_cleanup()
+
+
+def _cache_cleanup():
+    """Remove expired entries (called periodically)"""
+    now = _time.time()
+    expired = [k for k, v in _cache.items() if now - v["ts"] > 3600]  # Remove anything older than 1 hour
+    for k in expired:
+        del _cache[k]
 
 
 def _session() -> requests.Session:
@@ -170,41 +180,32 @@ def _fetch_sina_kline(symbol: str, period: str = "daily", datalen: int = 500) ->
 def _fetch_tencent_daily(symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
     sina_sym, _ = _market_prefix(symbol)
     sess = _session()
-    all_data = []
     end_dt = end_date if end_date else datetime.now().strftime("%Y%m%d")
 
-    for offset in range(0, 3000, 300):
-        url = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
-        params = {
-            "_var": "kline_dayqfq",
-            "param": f"{sina_sym},day,{start_date},{end_dt},300,qfq",
-        }
-        try:
-            r = sess.get(url, params=params, timeout=10)
-            if r.status_code == 200:
-                json_str = r.text.split("=", 1)[1] if "=" in r.text else r.text
-                data = json.loads(json_str)
-                stock_data = data.get("data", {}).get(sina_sym, {})
-                klines = stock_data.get("qfqday") or stock_data.get("day") or []
-                if not klines:
-                    break
-                for k in klines:
-                    all_data.append({"date": k[0], "open": k[1], "close": k[2], "high": k[3], "low": k[4], "volume": k[5]})
-                if len(klines) < 300:
-                    break
-        except Exception:
-            break
-
-    if not all_data:
-        raise ConnectionError("腾讯财经数据获取失败")
-
-    df = pd.DataFrame(all_data)
-    df["date"] = pd.to_datetime(df["date"])
-    df = df.set_index("date")
-    df = df[["open", "high", "low", "close", "volume"]].astype(float)
-    df = df.sort_index()
-    df = df[~df.index.duplicated(keep="first")]
-    return df
+    url = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+    params = {
+        "_var": "kline_dayqfq",
+        "param": f"{sina_sym},day,{start_date},{end_dt},800,qfq",
+    }
+    try:
+        r = sess.get(url, params=params, timeout=10)
+        if r.status_code == 200:
+            json_str = r.text.split("=", 1)[1] if "=" in r.text else r.text
+            data = json.loads(json_str)
+            stock_data = data.get("data", {}).get(sina_sym, {})
+            klines = stock_data.get("qfqday") or stock_data.get("day") or []
+            if klines:
+                all_data = [{"date": k[0], "open": k[1], "close": k[2], "high": k[3], "low": k[4], "volume": k[5]} for k in klines]
+                df = pd.DataFrame(all_data)
+                df["date"] = pd.to_datetime(df["date"])
+                df = df.set_index("date")
+                df = df[["open", "high", "low", "close", "volume"]].astype(float)
+                df = df.sort_index()
+                df = df[~df.index.duplicated(keep="first")]
+                return df
+    except Exception:
+        pass
+    raise ConnectionError("腾讯财经数据获取失败")
 
 
 # ============================================================

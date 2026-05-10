@@ -281,13 +281,13 @@ def api_analyze():
         if rv is not None:
             rsi_arr.append({"time": ts, "value": rv})
 
-        if bool(row.get("strong_buy", False)):
+        if row.get("strong_buy", False) == True:
             sbuy_m.append({"time": ts, "position": "belowBar", "color": "#FFD700", "shape": "arrowUp", "text": "强买"})
-        if bool(row.get("strong_sell", False)):
+        if row.get("strong_sell", False) == True:
             ssell_m.append({"time": ts, "position": "aboveBar", "color": "#FF4444", "shape": "arrowDown", "text": "强卖"})
-        if bool(row.get("weak_buy", False)) and not bool(row.get("strong_buy", False)):
+        if row.get("weak_buy", False) == True and not row.get("strong_buy", False) == True:
             wbuy_m.append({"time": ts, "position": "belowBar", "color": "#ef5350", "shape": "circle", "text": "买"})
-        if bool(row.get("weak_sell", False)) and not bool(row.get("strong_sell", False)):
+        if row.get("weak_sell", False) == True and not row.get("strong_sell", False) == True:
             wsell_m.append({"time": ts, "position": "aboveBar", "color": "#26a69a", "shape": "circle", "text": "卖"})
 
     return jsonify({
@@ -387,6 +387,20 @@ def api_watchlist_realtime():
         else:
             try:
                 df = fetch_stock_daily(sym, "20240101", "")
+                # Merge realtime price
+                if q and q["price"] > 0 and len(df) > 0:
+                    import pandas as pd_
+                    last_idx = df.index[-1]
+                    today_str = q["date"]
+                    last_d = str(last_idx.date()) if hasattr(last_idx, 'date') else str(last_idx)[:10]
+                    if today_str == last_d:
+                        df.loc[last_idx, "close"] = q["price"]
+                        df.loc[last_idx, "high"] = max(df.loc[last_idx, "high"], q["high"])
+                        df.loc[last_idx, "low"] = min(df.loc[last_idx, "low"], q["low"])
+                    else:
+                        new_row = pd_.DataFrame({"open":[q["open"]],"high":[q["high"]],"low":[q["low"]],"close":[q["price"]],"volume":[q["volume"]]}, index=[pd_.to_datetime(today_str)])
+                        new_row.index.name = df.index.name
+                        df = pd_.concat([df, new_row])
                 sig_df = compute_signals(df)
                 sig = get_latest_signal(sig_df)
                 signal_data = asdict(sig)
@@ -476,8 +490,8 @@ def api_backtest():
     if not result.trades.empty:
         for _, r in result.trades.iterrows():
             trades_list.append({
-                "buy_date": str(r["buy_date"]) if r.get("buy_date") else "",
-                "sell_date": str(r["sell_date"].date()) if hasattr(r["sell_date"], "date") else str(r["sell_date"]),
+                "buy_date": str(r.get("buy_date", "")),
+                "sell_date": str(r["sell_date"].date()) if hasattr(r.get("sell_date"), "date") else str(r.get("sell_date", "")),
                 "entry_price": _sanitize(r["entry_price"]),
                 "exit_price": _sanitize(r["exit_price"]),
                 "shares": int(r["shares"]),

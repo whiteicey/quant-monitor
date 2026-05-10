@@ -19,8 +19,10 @@ def rsi(close: pd.Series, period: int = 14) -> pd.Series:
     loss = (-delta).where(delta < 0, 0.0)
     avg_gain = gain.ewm(alpha=1 / period, min_periods=period).mean()
     avg_loss = loss.ewm(alpha=1 / period, min_periods=period).mean()
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    result = 100 - (100 / (1 + rs))
+    result = result.fillna(100)  # All gains, no losses → RSI = 100
+    return result
 
 
 def macd(close: pd.Series, fast: int = 6, slow: int = 7, signal: int = 4):
