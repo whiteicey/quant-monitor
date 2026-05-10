@@ -52,22 +52,43 @@ class StopConfig:
     atr_stop_mult: float = 0.0      # ATR止损倍数 (0=不启用, 2.0=2倍ATR)
 
 
-def apply_stop_rules(price: float, entry_price: float, max_price_since_entry: float,
-                     atr_value: float, config: StopConfig) -> Optional[str]:
+def apply_stop_rules(price: float, low: float, high: float, entry_price: float, 
+                     max_price_since_entry: float, atr_value: float, 
+                     config: StopConfig) -> tuple:
     """
-    检查是否触发止盈止损
-    返回: None(不触发), "stop_loss", "take_profit", "trailing_stop"
-    TODO: 集成到backtest()的主循环中
+    检查是否触发止盈止损（使用盘中最高最低价）
+    返回: (trigger_type, fill_price) or (None, None)
+    trigger_type: "stop_loss" / "take_profit" / "trailing_stop" / None
+    fill_price: 模拟成交价（止损价或止盈价，非收盘价）
     """
-    if config.stop_loss_pct > 0 and price <= entry_price * (1 - config.stop_loss_pct):
-        return "stop_loss"
-    if config.take_profit_pct > 0 and price >= entry_price * (1 + config.take_profit_pct):
-        return "take_profit"
-    if config.trailing_stop_pct > 0 and price <= max_price_since_entry * (1 - config.trailing_stop_pct):
-        return "trailing_stop"
-    if config.atr_stop_mult > 0 and atr_value > 0 and price <= entry_price - config.atr_stop_mult * atr_value:
-        return "stop_loss"
-    return None
+    if entry_price <= 0:
+        return None, None
+    
+    # 固定止损: 盘中最低价触及止损线
+    if config.stop_loss_pct > 0:
+        stop_price = entry_price * (1 - config.stop_loss_pct)
+        if low <= stop_price:
+            return "stop_loss", stop_price
+    
+    # ATR止损: 盘中最低价触及ATR止损线
+    if config.atr_stop_mult > 0 and atr_value > 0:
+        atr_stop_price = max(0.01, entry_price - config.atr_stop_mult * atr_value)
+        if low <= atr_stop_price:
+            return "stop_loss", atr_stop_price
+    
+    # 移动止损: 从最高点回落超过百分比
+    if config.trailing_stop_pct > 0 and max_price_since_entry > 0:
+        trail_price = max_price_since_entry * (1 - config.trailing_stop_pct)
+        if low <= trail_price:
+            return "trailing_stop", trail_price
+    
+    # 固定止盈: 盘中最高价触及止盈线
+    if config.take_profit_pct > 0:
+        target_price = entry_price * (1 + config.take_profit_pct)
+        if high >= target_price:
+            return "take_profit", target_price
+    
+    return None, None
 
 
 # ============================================================

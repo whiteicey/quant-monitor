@@ -474,6 +474,20 @@ def api_backtest():
     commission = float(request.args.get("commission", "0.001"))
     stamp_tax = float(request.args.get("stamp_tax", "0.001"))
 
+    # 止盈止损参数
+    stop_config = None
+    try:
+        _sl = float(request.args.get("stop_loss_pct", "0"))
+        _tp = float(request.args.get("take_profit_pct", "0"))
+        _ts = float(request.args.get("trailing_stop_pct", "0"))
+        _atrsl = float(request.args.get("atr_stop_mult", "0"))
+        if any(x > 0 for x in [_sl, _tp, _ts, _atrsl]):
+            from src.extensions import StopConfig
+            stop_config = StopConfig(stop_loss_pct=_sl, take_profit_pct=_tp,
+                                     trailing_stop_pct=_ts, atr_stop_mult=_atrsl)
+    except (ValueError, TypeError):
+        pass
+
     try:
         df = fetch_stock_daily(symbol, start, end)
     except Exception as e:
@@ -482,7 +496,7 @@ def api_backtest():
     try:
         result = backtest(df, params=p, initial_capital=initial_capital,
                           commission=commission, stamp_tax=stamp_tax,
-                          strategy=strategy)
+                          strategy=strategy, stop_config=stop_config)
     except Exception as e:
         return jsonify({"error": f"回测失败: {e}"}), 500
 
@@ -497,6 +511,7 @@ def api_backtest():
                 "shares": int(r["shares"]),
                 "pnl": _sanitize(r["pnl"]),
                 "return_pct": _sanitize(r["return_pct"]),
+                "exit_type": r.get("exit_type", "signal"),
             })
 
     return jsonify({
@@ -537,6 +552,20 @@ def api_backtest_compare():
     commission = float(request.args.get("commission", "0.001"))
     stamp_tax = float(request.args.get("stamp_tax", "0.001"))
 
+    # 止盈止损参数
+    stop_config = None
+    try:
+        _sl = float(request.args.get("stop_loss_pct", "0"))
+        _tp = float(request.args.get("take_profit_pct", "0"))
+        _ts = float(request.args.get("trailing_stop_pct", "0"))
+        _atrsl = float(request.args.get("atr_stop_mult", "0"))
+        if any(x > 0 for x in [_sl, _tp, _ts, _atrsl]):
+            from src.extensions import StopConfig
+            stop_config = StopConfig(stop_loss_pct=_sl, take_profit_pct=_tp,
+                                     trailing_stop_pct=_ts, atr_stop_mult=_atrsl)
+    except (ValueError, TypeError):
+        pass
+
     try:
         df = fetch_stock_daily(symbol, start, end)
     except Exception as e:
@@ -545,7 +574,7 @@ def api_backtest_compare():
     try:
         results = backtest_compare(df, params=p, initial_capital=initial_capital,
                                    commission=commission, stamp_tax=stamp_tax,
-                                   strategy_ids=strategy_ids)
+                                   strategy_ids=strategy_ids, stop_config=stop_config)
     except Exception as e:
         return jsonify({"error": f"策略对比失败: {e}"}), 500
 
@@ -753,6 +782,21 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .compare-legend-item:hover { background:var(--bg4); }
   .compare-legend-dot { width:12px; height:4px; border-radius:2px; }
 
+  /* Alert toast */
+  .alert-toast-container { position:fixed; top:60px; right:16px; z-index:1001; display:flex; flex-direction:column; gap:8px; pointer-events:none; }
+  .alert-toast { background:var(--bg2); border:1px solid var(--border2); border-radius:var(--radius-sm); padding:12px 16px; min-width:280px; box-shadow:0 4px 24px rgba(0,0,0,.5); animation:toastIn .3s ease; pointer-events:auto; display:flex; align-items:center; gap:10px; }
+  .alert-toast.fade-out { animation:toastOut .3s ease forwards; }
+  @keyframes toastIn { from{opacity:0;transform:translateX(100px)} to{opacity:1;transform:none} }
+  @keyframes toastOut { from{opacity:1;transform:none} to{opacity:0;transform:translateX(100px)} }
+  .alert-toast-icon { font-size:20px; }
+  .alert-toast-body { flex:1; }
+  .alert-toast-title { font-size:13px; font-weight:600; }
+  .alert-toast-msg { font-size:12px; color:var(--text2); margin-top:2px; }
+  .alert-toast-close { background:none; border:none; color:var(--text3); cursor:pointer; font-size:16px; padding:4px; }
+  /* Alert toggle */
+  .alert-toggle { display:flex; align-items:center; gap:8px; padding:8px 0; font-size:13px; }
+  .alert-toggle input[type="checkbox"] { accent-color:var(--accent); width:16px; height:16px; }
+
   @media(max-width:1000px){
     .main { flex-direction:column; height:auto; overflow:visible; }
     .sidebar { width:100%; min-width:0; border-left:none; border-top:1px solid var(--border); max-height:none; }
@@ -832,6 +876,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <span id="realtime-price" style="font-family:'JetBrains Mono',monospace;font-size:20px;font-weight:700;margin-left:8px;"></span>
   <span id="realtime-change" style="font-family:'JetBrains Mono',monospace;font-size:14px;margin-left:4px;"></span>
   <span id="realtime-status" style="font-size:11px;color:var(--text-xs);margin-left:auto;white-space:nowrap;"></span>
+  <label class="alert-toggle" style="margin-left:8px;"><input type="checkbox" id="alert-enabled" onchange="toggleAlerts()"> <span style="font-size:12px;color:var(--text-dim);">提醒</span></label>
 </div>
 
 <div class="alert-banner" id="alert-banner"></div>
@@ -970,6 +1015,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
           <div class="param-item"><label>手续费率</label><input type="number" id="bt-commission" value="0.001" step="0.0001" min="0"></div>
           <div class="param-item"><label>印花税率</label><input type="number" id="bt-tax" value="0.001" step="0.0001" min="0"></div>
         </div>
+        <div class="params-grid" style="margin-top:8px;">
+          <div class="param-item"><label>止损(%)</label><input type="number" id="bt-sl" value="0" step="1" min="0" max="50"></div>
+          <div class="param-item"><label>止盈(%)</label><input type="number" id="bt-tp" value="0" step="1" min="0" max="100"></div>
+          <div class="param-item"><label>移动止损(%)</label><input type="number" id="bt-tsl" value="0" step="1" min="0" max="50"></div>
+          <div class="param-item"><label>ATR止损(倍)</label><input type="number" id="bt-atrsl" value="0" step="0.5" min="0" max="10"></div>
+        </div>
       </div>
     </div>
   </div>
@@ -992,6 +1043,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   </div>
 </div>
 
+<div class="alert-toast-container" id="alert-container"></div>
 <div class="spinner-overlay" id="spinner"><div class="spinner"></div></div>
 
 <script>
@@ -1257,6 +1309,7 @@ async function doBacktest() {
     const url = `/api/backtest?symbol=${currentSymbol}&start=${start}&end=${end}` +
       `&strategy=${g('bt-strategy')}` +
       `&initial_capital=${g('bt-capital')}&commission=${g('bt-commission')}&stamp_tax=${g('bt-tax')}` +
+      `&stop_loss_pct=${parseFloat(g('bt-sl'))/100}&take_profit_pct=${parseFloat(g('bt-tp'))/100}&trailing_stop_pct=${parseFloat(g('bt-tsl'))/100}&atr_stop_mult=${g('bt-atrsl')}` +
       getSignalParams();
     const resp = await fetch(url);
     const data = await resp.json();
@@ -1279,10 +1332,13 @@ async function doBacktest() {
 
     const table = document.getElementById('bt-trades');
     if (data.trades.length) {
-      let html = '<thead><tr><th>买入日期</th><th>卖出日期</th><th>买入价</th><th>卖出价</th><th>数量</th><th>盈亏</th><th>收益率</th></tr></thead><tbody>';
+      let html = '<thead><tr><th>买入日期</th><th>卖出日期</th><th>买入价</th><th>卖出价</th><th>数量</th><th>盈亏</th><th>收益率</th><th>类型</th></tr></thead><tbody>';
       data.trades.forEach(t => {
         const cls = t.pnl>=0?'val-green':'val-red';
-        html += `<tr><td>${t.buy_date||''}</td><td>${t.sell_date}</td><td>${t.entry_price}</td><td>${t.exit_price}</td><td>${t.shares}</td><td class="${cls}">${t.pnl}</td><td class="${cls}">${t.return_pct}%</td></tr>`;
+        const exitBadge = t.exit_type === 'stop_loss' ? '<span style="color:var(--red);font-size:11px;">止损</span>' : 
+                  t.exit_type === 'take_profit' ? '<span style="color:var(--green);font-size:11px;">止盈</span>' :
+                  t.exit_type === 'trailing_stop' ? '<span style="color:var(--gold);font-size:11px;">移动止损</span>' : '';
+        html += `<tr><td>${t.buy_date||''}</td><td>${t.sell_date}</td><td>${t.entry_price}</td><td>${t.exit_price}</td><td>${t.shares}</td><td class="${cls}">${t.pnl}</td><td class="${cls}">${t.return_pct}%</td><td>${exitBadge}</td></tr>`;
       });
       table.innerHTML = html + '</tbody>';
     } else {
@@ -1568,6 +1624,7 @@ async function doCompare() {
   try {
     const url = `/api/backtest/compare?symbol=${currentSymbol}&start=${start}&end=${end}&strategies=${selected.join(',')}` +
       `&initial_capital=${g('bt-capital')}&commission=${g('bt-commission')}&stamp_tax=${g('bt-tax')}` +
+      `&stop_loss_pct=${parseFloat(g('bt-sl'))/100}&take_profit_pct=${parseFloat(g('bt-tp'))/100}&trailing_stop_pct=${parseFloat(g('bt-tsl'))/100}&atr_stop_mult=${g('bt-atrsl')}` +
       getSignalParams();
     const resp = await fetch(url);
     const data = await resp.json();
@@ -1648,6 +1705,94 @@ async function doCompare() {
     panel.scrollIntoView({behavior:'smooth'});
   } catch(e) { alert('策略对比失败: '+e.message); } finally { hideSpinner(); }
 }
+
+// ---- Alert Engine ----
+const alertCooldown = {};
+const ALERT_COOLDOWN_MS = 300000; // 5分钟冷却
+let alertTimer = null;
+let alertEnabled = false;
+let audioCtx = null;
+
+function toggleAlerts() {
+  alertEnabled = document.getElementById('alert-enabled').checked;
+  localStorage.setItem('alertEnabled', alertEnabled);
+  if (alertEnabled) {
+    startAlertEngine();
+    if (!audioCtx) { try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch(e){} }
+  } else {
+    stopAlertEngine();
+  }
+}
+
+function startAlertEngine() {
+  if (alertTimer) clearInterval(alertTimer);
+  alertTimer = setInterval(checkAlerts, 10000);
+}
+
+function stopAlertEngine() {
+  if (alertTimer) { clearInterval(alertTimer); alertTimer = null; }
+}
+
+async function checkAlerts() {
+  if (!alertEnabled) return;
+  try {
+    const resp = await fetch('/api/watchlist/realtime');
+    const data = await resp.json();
+    if (!data || data.error) return;
+    data.forEach(stock => {
+      if (stock.signal === '强烈买入' || stock.signal === '买入') {
+        fireAlert(stock.symbol, stock.name, stock.signal, 'buy');
+      } else if (stock.signal === '强烈卖出' || stock.signal === '卖出') {
+        fireAlert(stock.symbol, stock.name, stock.signal, 'sell');
+      }
+    });
+  } catch(e) {}
+}
+
+function fireAlert(symbol, name, signal, type) {
+  const key = symbol + '_' + signal;
+  const last = alertCooldown[key] || 0;
+  if (Date.now() - last < ALERT_COOLDOWN_MS) return;
+  alertCooldown[key] = Date.now();
+  
+  showToast(name + '(' + symbol + ')', signal, type);
+  
+  if (audioCtx) {
+    try {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.frequency.value = type === 'buy' ? 800 : 400;
+      gain.gain.value = 0.3;
+      osc.start();
+      osc.stop(audioCtx.currentTime + 0.2);
+    } catch(e) {}
+  }
+}
+
+function showToast(title, msg, type) {
+  const container = document.getElementById('alert-container');
+  const toast = document.createElement('div');
+  toast.className = 'alert-toast';
+  const icon = type === 'buy' ? '📈' : '📉';
+  const color = type === 'buy' ? 'var(--green)' : 'var(--red)';
+  toast.innerHTML = `<span class="alert-toast-icon">${icon}</span><div class="alert-toast-body"><div class="alert-toast-title" style="color:${color}">${title}</div><div class="alert-toast-msg">${msg}</div></div><button class="alert-toast-close" onclick="this.parentElement.remove()">×</button>`;
+  container.appendChild(toast);
+  setTimeout(() => { toast.classList.add('fade-out'); setTimeout(() => toast.remove(), 300); }, 5000);
+}
+
+(function() {
+  const saved = localStorage.getItem('alertEnabled');
+  if (saved === 'true') {
+    alertEnabled = true;
+    document.addEventListener('DOMContentLoaded', () => {
+      const cb = document.getElementById('alert-enabled');
+      if (cb) cb.checked = true;
+      startAlertEngine();
+    });
+  }
+})();
 
 // ---- Watchlist ----
 let currentView = 'watchlist';

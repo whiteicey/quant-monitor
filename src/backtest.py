@@ -5,6 +5,7 @@ import pandas as pd
 import numpy as np
 from dataclasses import dataclass
 from .signals import compute_signals, SignalParams
+from .extensions import StopConfig, apply_stop_rules
 
 
 @dataclass
@@ -278,6 +279,7 @@ def backtest(
     commission: float = 0.001,
     stamp_tax: float = 0.001,
     strategy: str = "macd_rsi",
+    stop_config=None,
     # 保持向后兼容
     use_strong_only: bool = False,
 ) -> BacktestResult:
@@ -301,12 +303,16 @@ def backtest(
     position = 0
     entry_price = 0.0
     entry_date = None
+    max_price_since_entry = 0.0
     trades = []
     eq_curve = []  # 权益曲线（每根K线一个值）
 
     for i in range(len(signals_df)):
         row = signals_df.iloc[i]
         price = row["close"]
+        bar_high = row["high"]
+        bar_low = row["low"]
+        atr_val = float(row.get("atr", 0)) if not pd.isna(row.get("atr", 0)) else 0
         date = signals_df.index[i]
         is_buy = bool(buy_mask.iloc[i]) if hasattr(buy_mask, 'iloc') else bool(buy_mask[i])
         is_sell = bool(sell_mask.iloc[i]) if hasattr(sell_mask, 'iloc') else bool(sell_mask[i])
@@ -314,7 +320,33 @@ def backtest(
         # 记录当前净值（未实现盈亏也计入）
         eq_curve.append(capital + position * price)
 
-        if is_buy and position == 0:
+        # 止盈止损检查（优先于信号买卖）
+        stop_type, fill_price = None, None
+        if position > 0 and stop_config:
+            max_price_since_entry = max(max_price_since_entry, bar_high)
+            stop_type, fill_price = apply_stop_rules(
+                price, bar_low, bar_high, entry_price, 
+                max_price_since_entry, atr_val, stop_config)
+        
+        if stop_type and position > 0:
+            # 止盈止损触发，强制卖出（用fill_price而非close）
+            revenue = position * fill_price * (1 - commission - stamp_tax)
+            pnl = revenue - position * entry_price * (1 + commission)
+            capital += revenue
+            trades.append({
+                "buy_date": str(entry_date.date()) if hasattr(entry_date, 'date') else str(entry_date)[:10],
+                "sell_date": date,
+                "entry_price": entry_price,
+                "exit_price": round(fill_price, 2),
+                "shares": position,
+                "pnl": round(pnl, 2),
+                "return_pct": round((fill_price / entry_price - 1) * 100, 2),
+                "exit_type": stop_type,
+            })
+            position = 0
+            max_price_since_entry = 0.0
+
+        elif is_buy and position == 0:
             max_shares = int(capital / (price * (1 + commission)))
             shares = (max_shares // 100) * 100
             if shares == 0 and max_shares >= 1:
@@ -325,6 +357,7 @@ def backtest(
                 position = shares
                 entry_price = price
                 entry_date = date
+                max_price_since_entry = bar_high
 
         elif is_sell and position > 0:
             revenue = position * price * (1 - commission - stamp_tax)
@@ -338,8 +371,10 @@ def backtest(
                 "shares": position,
                 "pnl": round(pnl, 2),
                 "return_pct": round((price / entry_price - 1) * 100, 2),
+                "exit_type": "signal",
             })
             position = 0
+            max_price_since_entry = 0.0
 
     # 未平仓持仓：按当前市价记录，不扣卖出手续费（因为还没卖）
     final_price = signals_df.iloc[-1]["close"]
@@ -356,6 +391,7 @@ def backtest(
             "shares": position,
             "pnl": round(pnl, 2),
             "return_pct": round((final_price / entry_price - 1) * 100, 2),
+            "exit_type": "holding",
         })
         capital += market_value  # 按市值计入，不扣卖出费用
         position = 0
@@ -406,6 +442,7 @@ def backtest_compare(
     commission: float = 0.001,
     stamp_tax: float = 0.001,
     strategy_ids: list = None,
+    stop_config=None,
 ) -> list:
     """
     对指定策略跑回测并返回对比数据
@@ -423,7 +460,8 @@ def backtest_compare(
             continue
         # Call backtest which will reuse cached data
         result = backtest(df, params=params, initial_capital=initial_capital,
-                         commission=commission, stamp_tax=stamp_tax, strategy=sid)
+                         commission=commission, stamp_tax=stamp_tax, strategy=sid,
+                         stop_config=stop_config)
         results.append({
             "strategy_id": sid,
             "strategy_name": result.strategy_name,
