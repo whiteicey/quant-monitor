@@ -412,3 +412,36 @@ def fetch_realtime_quotes_batch(symbols: list) -> dict:
             continue
 
     return results
+
+
+def merge_realtime_bar(df, quote):
+    """
+    将实时行情合并到K线数据的最后一根bar（或追加新bar）
+    df: 历史K线DataFrame (index=datetime, columns=open/high/low/close/volume)
+    quote: fetch_realtime_quote()返回的dict
+    返回: 合并后的DataFrame (新副本)
+    """
+    if quote is None or quote.get("price", 0) <= 0 or len(df) == 0:
+        return df
+
+    df = df.copy()
+    last_idx = df.index[-1]
+    today_str = quote.get("date", "")
+    last_date_str = str(last_idx.date()) if hasattr(last_idx, 'date') else str(last_idx)[:10]
+
+    if today_str == last_date_str:
+        df.loc[last_idx, "close"] = quote["price"]
+        df.loc[last_idx, "high"] = max(df.loc[last_idx, "high"], quote["high"])
+        df.loc[last_idx, "low"] = min(df.loc[last_idx, "low"], quote["low"])
+        df.loc[last_idx, "volume"] = quote["volume"]
+    else:
+        new_idx = pd.to_datetime(today_str)
+        new_row = pd.DataFrame({
+            "open": [quote["open"]], "high": [quote["high"]],
+            "low": [quote["low"]], "close": [quote["price"]],
+            "volume": [quote["volume"]],
+        }, index=[new_idx])
+        new_row.index.name = df.index.name
+        df = pd.concat([df, new_row])
+
+    return df

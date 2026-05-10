@@ -10,7 +10,7 @@ from flask import Flask, request, jsonify
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from src.data import fetch_stock_daily, fetch_stock_info, search_stock, fetch_realtime_quote, fetch_realtime_quotes_batch
+from src.data import fetch_stock_daily, fetch_stock_info, search_stock, fetch_realtime_quote, fetch_realtime_quotes_batch, merge_realtime_bar
 from src.signals import compute_signals, get_latest_signal, SignalParams
 from src.backtest import backtest, get_strategy_list, get_preset_list, backtest_compare
 
@@ -119,29 +119,7 @@ def api_realtime():
     except Exception as e:
         return jsonify({"error": f"数据获取失败: {e}"}), 400
 
-    import pandas as pd
-    # 更新最后一根K线的OHLCV为实时值
-    if len(df) > 0 and quote["price"] > 0:
-        last_idx = df.index[-1]
-        today_str = quote["date"]
-        last_date_str = str(last_idx.date()) if hasattr(last_idx, 'date') else str(last_idx)[:10]
-
-        if today_str == last_date_str:
-            # 同一天，用实时数据更新最后一根bar
-            df.loc[last_idx, "close"] = quote["price"]
-            df.loc[last_idx, "high"] = max(df.loc[last_idx, "high"], quote["high"])
-            df.loc[last_idx, "low"] = min(df.loc[last_idx, "low"], quote["low"])
-            df.loc[last_idx, "volume"] = quote["volume"]
-        else:
-            # 跨天了，追加一根新bar
-            new_idx = pd.to_datetime(today_str)
-            new_row = pd.DataFrame({
-                "open": [quote["open"]], "high": [quote["high"]],
-                "low": [quote["low"]], "close": [quote["price"]],
-                "volume": [quote["volume"]],
-            }, index=[new_idx])
-            new_row.index.name = df.index.name
-            df = pd.concat([df, new_row])
+    df = merge_realtime_bar(df, quote)
 
     # 重算信号
     try:
@@ -216,27 +194,9 @@ def api_analyze():
         return jsonify({"error": f"数据获取失败: {e}"}), 400
 
     # 合并实时行情到最后一根K线（和TradingView barstate.islast保持一致）
-    import pandas as pd
     try:
         quote = fetch_realtime_quote(symbol)
-        if quote and quote["price"] > 0 and len(df) > 0:
-            last_idx = df.index[-1]
-            today_str = quote["date"]
-            last_date_str = str(last_idx.date()) if hasattr(last_idx, 'date') else str(last_idx)[:10]
-            if today_str == last_date_str:
-                df.loc[last_idx, "close"] = quote["price"]
-                df.loc[last_idx, "high"] = max(df.loc[last_idx, "high"], quote["high"])
-                df.loc[last_idx, "low"] = min(df.loc[last_idx, "low"], quote["low"])
-                df.loc[last_idx, "volume"] = quote["volume"]
-            else:
-                new_idx = pd.to_datetime(today_str)
-                new_row = pd.DataFrame({
-                    "open": [quote["open"]], "high": [quote["high"]],
-                    "low": [quote["low"]], "close": [quote["price"]],
-                    "volume": [quote["volume"]],
-                }, index=[new_idx])
-                new_row.index.name = df.index.name
-                df = pd.concat([df, new_row])
+        df = merge_realtime_bar(df, quote)
     except Exception:
         pass  # 实时行情获取失败不影响分析，用历史数据继续
 
@@ -388,19 +348,7 @@ def api_watchlist_realtime():
             try:
                 df = fetch_stock_daily(sym, "20240101", "")
                 # Merge realtime price
-                if q and q["price"] > 0 and len(df) > 0:
-                    import pandas as pd_
-                    last_idx = df.index[-1]
-                    today_str = q["date"]
-                    last_d = str(last_idx.date()) if hasattr(last_idx, 'date') else str(last_idx)[:10]
-                    if today_str == last_d:
-                        df.loc[last_idx, "close"] = q["price"]
-                        df.loc[last_idx, "high"] = max(df.loc[last_idx, "high"], q["high"])
-                        df.loc[last_idx, "low"] = min(df.loc[last_idx, "low"], q["low"])
-                    else:
-                        new_row = pd_.DataFrame({"open":[q["open"]],"high":[q["high"]],"low":[q["low"]],"close":[q["price"]],"volume":[q["volume"]]}, index=[pd_.to_datetime(today_str)])
-                        new_row.index.name = df.index.name
-                        df = pd_.concat([df, new_row])
+                df = merge_realtime_bar(df, q)
                 sig_df = compute_signals(df)
                 sig = get_latest_signal(sig_df)
                 signal_data = asdict(sig)
@@ -1205,6 +1153,35 @@ window.addEventListener('resize', resizeCharts);
 function showSpinner() { document.getElementById('spinner').classList.add('active'); }
 function hideSpinner() { document.getElementById('spinner').classList.remove('active'); }
 
+// ---- Signal Panel Update ----
+function updateSignalPanel(s) {
+  document.getElementById('bull-score').textContent = s.bullish_signals;
+  document.getElementById('bear-score').textContent = s.bearish_signals;
+  document.getElementById('bull-bar').style.width = (s.bullish_signals/6*50)+'%';
+  document.getElementById('bear-bar').style.width = (s.bearish_signals/6*50)+'%';
+  const trendEl = document.getElementById('sig-trend');
+  trendEl.textContent = s.trend;
+  trendEl.className = 'val ' + (s.trend==='上涨'?'val-green':s.trend==='下跌'?'val-red':'val-gold');
+  document.getElementById('sig-sbuy').innerHTML = s.strong_buy ? '<span class="val-green">YES</span>' : '<span style="color:var(--text-xs)">—</span>';
+  document.getElementById('sig-ssell').innerHTML = s.strong_sell ? '<span class="val-red">YES</span>' : '<span style="color:var(--text-xs)">—</span>';
+  document.getElementById('sig-wbuy').innerHTML = s.weak_buy ? '<span class="val-green">YES</span>' : '<span style="color:var(--text-xs)">—</span>';
+  document.getElementById('sig-wsell').innerHTML = s.weak_sell ? '<span class="val-red">YES</span>' : '<span style="color:var(--text-xs)">—</span>';
+  const rsiEl = document.getElementById('sig-rsi');
+  rsiEl.textContent = s.rsi_value;
+  rsiEl.className = 'val ' + (s.rsi_value>70?'val-red':s.rsi_value<30?'val-green':'');
+  document.getElementById('sig-macd').textContent = s.macd_value;
+  document.getElementById('sig-pos').textContent = s.price_position + '%';
+  document.getElementById('sig-rbuy').textContent = s.recommended_buy;
+  document.getElementById('sig-rsell').textContent = s.recommended_sell;
+  document.getElementById('sig-stop').textContent = s.stop_loss;
+  document.getElementById('sig-support').textContent = s.support;
+  document.getElementById('sig-resist').textContent = s.resistance;
+  const banner = document.getElementById('alert-banner');
+  banner.className='alert-banner'; banner.style.display='none';
+  if (s.strong_buy) { banner.className='alert-banner alert-buy'; banner.textContent='强烈买入信号！多头评分 '+s.bullish_signals+'/6，建议关注买入机会'; }
+  else if (s.strong_sell) { banner.className='alert-banner alert-sell'; banner.textContent='强烈卖出信号！空头评分 '+s.bearish_signals+'/6，注意风险'; }
+}
+
 // ---- Analyze ----
 async function doAnalyze() {
   const start = getStartDate();
@@ -1262,35 +1239,7 @@ async function doAnalyze() {
 
     // Sidebar
     const s = data.signal;
-    document.getElementById('bull-score').textContent = s.bullish_signals;
-    document.getElementById('bear-score').textContent = s.bearish_signals;
-    document.getElementById('bull-bar').style.width = (s.bullish_signals/6*50)+'%';
-    document.getElementById('bear-bar').style.width = (s.bearish_signals/6*50)+'%';
-
-    const trendEl = document.getElementById('sig-trend');
-    trendEl.textContent = s.trend;
-    trendEl.className = 'val ' + (s.trend==='上涨'?'val-green':s.trend==='下跌'?'val-red':'val-gold');
-
-    document.getElementById('sig-sbuy').innerHTML = s.strong_buy ? '<span class="val-green">YES</span>' : '<span style="color:var(--text-xs)">—</span>';
-    document.getElementById('sig-ssell').innerHTML = s.strong_sell ? '<span class="val-red">YES</span>' : '<span style="color:var(--text-xs)">—</span>';
-    document.getElementById('sig-wbuy').innerHTML = s.weak_buy ? '<span class="val-green">YES</span>' : '<span style="color:var(--text-xs)">—</span>';
-    document.getElementById('sig-wsell').innerHTML = s.weak_sell ? '<span class="val-red">YES</span>' : '<span style="color:var(--text-xs)">—</span>';
-
-    const rsiEl = document.getElementById('sig-rsi');
-    rsiEl.textContent = s.rsi_value;
-    rsiEl.className = 'val ' + (s.rsi_value>70?'val-red':s.rsi_value<30?'val-green':'');
-    document.getElementById('sig-macd').textContent = s.macd_value;
-    document.getElementById('sig-pos').textContent = s.price_position + '%';
-    document.getElementById('sig-rbuy').textContent = s.recommended_buy;
-    document.getElementById('sig-rsell').textContent = s.recommended_sell;
-    document.getElementById('sig-stop').textContent = s.stop_loss;
-    document.getElementById('sig-support').textContent = s.support;
-    document.getElementById('sig-resist').textContent = s.resistance;
-
-    const banner = document.getElementById('alert-banner');
-    banner.className='alert-banner'; banner.style.display='none';
-    if (s.strong_buy) { banner.className='alert-banner alert-buy'; banner.textContent='强烈买入信号！多头评分 '+s.bullish_signals+'/6，建议关注买入机会'; }
-    else if (s.strong_sell) { banner.className='alert-banner alert-sell'; banner.textContent='强烈卖出信号！空头评分 '+s.bearish_signals+'/6，注意风险'; }
+    updateSignalPanel(s);
 
   } catch(e) { alert('请求失败: '+e.message); } finally { hideSpinner(); startRealtime(); }
 }
@@ -1432,36 +1381,7 @@ async function fetchRealtime() {
 
     // 更新信号面板
     const s = data.signal;
-    document.getElementById('bull-score').textContent = s.bullish_signals;
-    document.getElementById('bear-score').textContent = s.bearish_signals;
-    document.getElementById('bull-bar').style.width = (s.bullish_signals/6*50)+'%';
-    document.getElementById('bear-bar').style.width = (s.bearish_signals/6*50)+'%';
-
-    const trendEl = document.getElementById('sig-trend');
-    trendEl.textContent = s.trend;
-    trendEl.className = 'val ' + (s.trend==='上涨'?'val-green':s.trend==='下跌'?'val-red':'val-gold');
-
-    document.getElementById('sig-sbuy').innerHTML = s.strong_buy ? '<span class="val-green">YES</span>' : '<span style="color:var(--text-xs)">—</span>';
-    document.getElementById('sig-ssell').innerHTML = s.strong_sell ? '<span class="val-red">YES</span>' : '<span style="color:var(--text-xs)">—</span>';
-    document.getElementById('sig-wbuy').innerHTML = s.weak_buy ? '<span class="val-green">YES</span>' : '<span style="color:var(--text-xs)">—</span>';
-    document.getElementById('sig-wsell').innerHTML = s.weak_sell ? '<span class="val-red">YES</span>' : '<span style="color:var(--text-xs)">—</span>';
-
-    const rsiEl = document.getElementById('sig-rsi');
-    rsiEl.textContent = s.rsi_value;
-    rsiEl.className = 'val ' + (s.rsi_value>70?'val-red':s.rsi_value<30?'val-green':'');
-    document.getElementById('sig-macd').textContent = s.macd_value;
-    document.getElementById('sig-pos').textContent = s.price_position + '%';
-    document.getElementById('sig-rbuy').textContent = s.recommended_buy;
-    document.getElementById('sig-rsell').textContent = s.recommended_sell;
-    document.getElementById('sig-stop').textContent = s.stop_loss;
-    document.getElementById('sig-support').textContent = s.support;
-    document.getElementById('sig-resist').textContent = s.resistance;
-
-    // 信号横幅
-    const banner = document.getElementById('alert-banner');
-    banner.className='alert-banner'; banner.style.display='none';
-    if (s.strong_buy) { banner.className='alert-banner alert-buy'; banner.textContent='强烈买入信号！多头评分 '+s.bullish_signals+'/6，建议关注买入机会'; }
-    else if (s.strong_sell) { banner.className='alert-banner alert-sell'; banner.textContent='强烈卖出信号！空头评分 '+s.bearish_signals+'/6，注意风险'; }
+    updateSignalPanel(s);
 
     updateStatusText(isMarketOpen() ? '交易中' : '已收盘');
   } catch(e) {
