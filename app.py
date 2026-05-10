@@ -877,6 +877,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <span id="realtime-change" style="font-family:'JetBrains Mono',monospace;font-size:14px;margin-left:4px;"></span>
   <span id="realtime-status" style="font-size:11px;color:var(--text-xs);margin-left:auto;white-space:nowrap;"></span>
   <label class="alert-toggle" style="margin-left:8px;"><input type="checkbox" id="alert-enabled" onchange="toggleAlerts()"> <span style="font-size:12px;color:var(--text-dim);">提醒</span></label>
+  <label class="alert-toggle" style="margin-left:2px;"><input type="checkbox" id="alert-sound" checked onchange="toggleAlertSound()"> <span style="font-size:12px;color:var(--text-dim);">声音</span></label>
 </div>
 
 <div class="alert-banner" id="alert-banner"></div>
@@ -1711,6 +1712,7 @@ const alertCooldown = {};
 const ALERT_COOLDOWN_MS = 300000; // 5分钟冷却
 let alertTimer = null;
 let alertEnabled = false;
+let alertSoundEnabled = true;
 let audioCtx = null;
 
 function toggleAlerts() {
@@ -1722,6 +1724,11 @@ function toggleAlerts() {
   } else {
     stopAlertEngine();
   }
+}
+
+function toggleAlertSound() {
+  alertSoundEnabled = document.getElementById('alert-sound').checked;
+  localStorage.setItem('alertSoundEnabled', alertSoundEnabled);
 }
 
 function startAlertEngine() {
@@ -1757,7 +1764,7 @@ function fireAlert(symbol, name, signal, type) {
   
   showToast(name + '(' + symbol + ')', signal, type);
   
-  if (audioCtx) {
+  if (alertSoundEnabled && audioCtx) {
     try {
       const osc = audioCtx.createOscillator();
       const gain = audioCtx.createGain();
@@ -1784,12 +1791,21 @@ function showToast(title, msg, type) {
 
 (function() {
   const saved = localStorage.getItem('alertEnabled');
+  const soundSaved = localStorage.getItem('alertSoundEnabled');
+  if (soundSaved === 'false') alertSoundEnabled = false;
   if (saved === 'true') {
     alertEnabled = true;
     document.addEventListener('DOMContentLoaded', () => {
       const cb = document.getElementById('alert-enabled');
       if (cb) cb.checked = true;
+      const scb = document.getElementById('alert-sound');
+      if (scb) scb.checked = alertSoundEnabled;
       startAlertEngine();
+    });
+  } else {
+    document.addEventListener('DOMContentLoaded', () => {
+      const scb = document.getElementById('alert-sound');
+      if (scb) scb.checked = alertSoundEnabled;
     });
   }
 })();
