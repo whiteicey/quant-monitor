@@ -7,7 +7,43 @@ import numpy as np
 import requests
 import re
 import json
+import time as _time
 from datetime import datetime, timedelta
+
+
+# ============================================================
+# 内存缓存
+# ============================================================
+_cache = {}  # key -> {"data": ..., "ts": float}
+_CACHE_TTL = {
+    "daily": 300,     # 日线缓存5分钟
+    "weekly": 600,    # 周线缓存10分钟
+    "monthly": 600,   # 月线缓存10分钟
+    "30min": 60,      # 30min缓存1分钟
+    "1h": 120,        # 1h缓存2分钟
+    "5min": 30,       # 5min缓存30秒
+    "15min": 30,      # 15min缓存30秒
+    "search": 600,    # 搜索结果缓存10分钟
+    "info": 3600,     # 股票名称缓存1小时
+    "realtime": 5,    # 实时行情缓存5秒
+}
+
+
+def _cache_get(key, category="daily"):
+    """从缓存获取，过期返回None"""
+    entry = _cache.get(key)
+    if entry is None:
+        return None
+    ttl = _CACHE_TTL.get(category, 300)
+    if _time.time() - entry["ts"] > ttl:
+        del _cache[key]
+        return None
+    return entry["data"]
+
+
+def _cache_set(key, data):
+    """写入缓存"""
+    _cache[key] = {"data": data, "ts": _time.time()}
 
 
 def _session() -> requests.Session:
@@ -37,6 +73,10 @@ def search_stock(keyword: str, limit: int = 20) -> list:
     模糊搜索股票，支持代码或名称
     返回 [{"code": "688110", "name": "东芯股份", "market": "SH"}, ...]
     """
+    cached = _cache_get(f"search:{keyword}", "search")
+    if cached is not None:
+        return cached[:limit]
+
     sess = _session()
 
     # 东方财富搜索接口
@@ -61,6 +101,7 @@ def search_stock(keyword: str, limit: int = 20) -> list:
                     mkt = {"33": "SZ", "17": "SH", "80": "BJ"}.get(market_id, "")
                     results.append({"code": code, "name": name, "market": mkt})
             if results:
+                _cache_set(f"search:{keyword}", results)
                 return results[:limit]
     except Exception:
         pass
@@ -82,6 +123,7 @@ def search_stock(keyword: str, limit: int = 20) -> list:
                         name = parts[4] if len(parts) > 4 else parts[1]
                         mkt = "SH" if parts[0].startswith("sh") else "SZ"
                         results.append({"code": code, "name": name, "market": mkt})
+                _cache_set(f"search:{keyword}", results)
                 return results[:limit]
     except Exception:
         pass
@@ -189,6 +231,11 @@ def fetch_stock_daily(symbol: str, start_date: str = "20230101", end_date: str =
     if not end_date:
         end_date = pd.Timestamp.now().strftime("%Y%m%d")
 
+    cache_key = f"kline:{symbol}:{start_date}:{end_date}:{period}"
+    cached = _cache_get(cache_key, period)
+    if cached is not None:
+        return cached.copy()
+
     # 非日线数据：新浪直接获取
     if period != "daily":
         try:
@@ -199,6 +246,7 @@ def fetch_stock_daily(symbol: str, start_date: str = "20230101", end_date: str =
             df = df[(df.index >= start_dt) & (df.index <= end_dt + pd.Timedelta(days=1))]
             if len(df) > 0:
                 print(f"  [数据源: 新浪财经 {period}] 获取到 {len(df)} 条数据")
+                _cache_set(cache_key, df)
                 return df
         except Exception as e:
             raise ConnectionError(f"{period} K线获取失败: {e}")
@@ -209,6 +257,7 @@ def fetch_stock_daily(symbol: str, start_date: str = "20230101", end_date: str =
         df = _fetch_eastmoney(symbol, start_date, end_date)
         if len(df) > 0:
             print(f"  [数据源: 东方财富] 获取到 {len(df)} 条数据")
+            _cache_set(cache_key, df)
             return df
     except Exception as e:
         errors.append(f"东方财富: {e}")
@@ -219,6 +268,7 @@ def fetch_stock_daily(symbol: str, start_date: str = "20230101", end_date: str =
         df = df[(df.index >= start_dt) & (df.index <= end_dt)]
         if len(df) > 0:
             print(f"  [数据源: 新浪财经] 获取到 {len(df)} 条数据")
+            _cache_set(cache_key, df)
             return df
     except Exception as e:
         errors.append(f"新浪财经: {e}")
@@ -227,6 +277,7 @@ def fetch_stock_daily(symbol: str, start_date: str = "20230101", end_date: str =
         df = _fetch_tencent_daily(symbol, start_date, end_date)
         if len(df) > 0:
             print(f"  [数据源: 腾讯财经] 获取到 {len(df)} 条数据")
+            _cache_set(cache_key, df)
             return df
     except Exception as e:
         errors.append(f"腾讯财经: {e}")
@@ -236,6 +287,9 @@ def fetch_stock_daily(symbol: str, start_date: str = "20230101", end_date: str =
 
 def fetch_stock_info(symbol: str) -> str:
     """获取股票名称"""
+    cached = _cache_get(f"info:{symbol}", "info")
+    if cached is not None:
+        return cached
     sina_sym, _ = _market_prefix(symbol)
     try:
         sess = _session()
@@ -243,7 +297,9 @@ def fetch_stock_info(symbol: str) -> str:
         if r.status_code == 200:
             match = re.search(r'"(.+?),', r.text)
             if match:
-                return match.group(1)
+                name = match.group(1)
+                _cache_set(f"info:{symbol}", name)
+                return name
     except Exception:
         pass
     try:
@@ -251,7 +307,9 @@ def fetch_stock_info(symbol: str) -> str:
         info = ak.stock_individual_info_em(symbol=symbol)
         name_row = info[info["item"] == "股票简称"]
         if not name_row.empty:
-            return name_row.iloc[0]["value"]
+            name = name_row.iloc[0]["value"]
+            _cache_set(f"info:{symbol}", name)
+            return name
     except Exception:
         pass
     return symbol

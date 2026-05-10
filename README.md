@@ -363,11 +363,11 @@ pyinstaller --onefile --name "A股信号监控" --add-data "src;src" --hidden-im
 
 ### 体验优化
 - [x] A股配色 — 红涨绿跌，符合国内习惯
+- [x] Android APK — Chaquopy内嵌Python，GitHub Actions自动构建
+- [ ] 数据缓存 — 避免重复请求相同数据，加快加载速度
 - [ ] 深色/浅色主题切换
 - [ ] 图表绘图工具 — 手动画趋势线、标注
-- [ ] 数据缓存 — 避免重复请求相同数据，加快加载速度
 - [ ] 云端部署 — Docker 一键部署，手机随时随地访问
-- [ ] Android APK — 打包成独立安装包
 
 ### 策略研究
 - [ ] 更多技术指标 — KDJ、BOLL Width、OBV、VWAP 等
