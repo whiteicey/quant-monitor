@@ -100,6 +100,22 @@ def compute_signals(df: pd.DataFrame, params: SignalParams = None) -> pd.DataFra
     df["atr"] = ind.atr(h, l, c, params.atr_length)
     df["high_volatility"] = df["atr"] > ind.sma(df["atr"], 20) * 1.2
 
+    # --- KDJ ---
+    from .extensions import kdj as _kdj, obv as _obv, vwap as _vwap
+    df["kdj_k"], df["kdj_d"], df["kdj_j"] = _kdj(h, l, c)
+    df["kdj_overbought"] = df["kdj_j"] > 80
+    df["kdj_oversold"] = df["kdj_j"] < 20
+    df["kdj_golden_cross"] = ind.crossover(df["kdj_k"], df["kdj_d"])
+    df["kdj_death_cross"] = ind.crossunder(df["kdj_k"], df["kdj_d"])
+
+    # --- OBV ---
+    df["obv"] = _obv(c, v)
+    df["obv_ma"] = ind.sma(df["obv"], 20)
+    df["obv_bullish"] = df["obv"] > df["obv_ma"]
+
+    # --- VWAP ---
+    df["vwap"] = _vwap(h, l, c, v)
+
     # --- 支撑阻力（基于布林带周期） ---
     _sr_period = max(params.bb_length * 2, 20)  # 布林带周期的2倍，至少20
     df["resistance"] = h.rolling(_sr_period).max()

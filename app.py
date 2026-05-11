@@ -152,6 +152,12 @@ def api_realtime():
         "signal_line": {"time": ts, "value": _v("signal_line")},
         "macd_hist": {"time": ts, "value": _v("macd_hist")},
         "rsi": {"time": ts, "value": _v("rsi")},
+        "kdj_k": {"time": ts, "value": _v("kdj_k")},
+        "kdj_d": {"time": ts, "value": _v("kdj_d")},
+        "kdj_j": {"time": ts, "value": _v("kdj_j")},
+        "obv": {"time": ts, "value": _v("obv")},
+        "obv_ma": {"time": ts, "value": _v("obv_ma")},
+        "vwap": {"time": ts, "value": _v("vwap")},
     }
 
     return jsonify({
@@ -210,6 +216,7 @@ def api_analyze():
     fast_ema, slow_ema, bb_upper, bb_basis, bb_lower = [], [], [], [], []
     macd_line, signal_line, macd_hist, rsi_arr = [], [], [], []
     sbuy_m, ssell_m, wbuy_m, wsell_m = [], [], [], []
+    kdj_k_arr, kdj_d_arr, kdj_j_arr, obv_arr, obv_ma_arr, vwap_arr = [], [], [], [], [], []
 
     for i in range(len(sig_df)):
         row = sig_df.iloc[i]
@@ -241,6 +248,11 @@ def api_analyze():
         if rv is not None:
             rsi_arr.append({"time": ts, "value": rv})
 
+        for arr, col in [(kdj_k_arr,"kdj_k"),(kdj_d_arr,"kdj_d"),(kdj_j_arr,"kdj_j"),(obv_arr,"obv"),(obv_ma_arr,"obv_ma"),(vwap_arr,"vwap")]:
+            val = _v(col)
+            if val is not None:
+                arr.append({"time": ts, "value": val})
+
         if row.get("strong_buy", False) == True:
             sbuy_m.append({"time": ts, "position": "belowBar", "color": "#FFD700", "shape": "arrowUp", "text": "强买"})
         if row.get("strong_sell", False) == True:
@@ -259,6 +271,8 @@ def api_analyze():
             "bb_upper": bb_upper, "bb_basis": bb_basis, "bb_lower": bb_lower,
             "macd_line": macd_line, "signal_line": signal_line, "macd_hist": macd_hist,
             "rsi": rsi_arr,
+            "kdj_k": kdj_k_arr, "kdj_d": kdj_d_arr, "kdj_j": kdj_j_arr,
+            "obv": obv_arr, "obv_ma": obv_ma_arr, "vwap": vwap_arr,
             "strong_buy_markers": sbuy_m, "strong_sell_markers": ssell_m,
             "weak_buy_markers": wbuy_m, "weak_sell_markers": wsell_m,
         },
@@ -547,15 +561,27 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
-  :root {
-    --bg: #080c14; --bg2: #0f1520; --bg3: #161d2e; --bg4: #1c2538;
-    --border: #253044; --border2: #2f3d55;
-    --text: #dce4f0; --text-dim: #7a8ba4; --text-xs: #5a6a80;
-    --accent: #4f8ff7; --accent2: #6ba3ff;
-    --green: #ff4757; --green-dim: rgba(255,71,87,0.15);
-    --red: #00d98b; --red-dim: rgba(0,217,139,0.15);
-    --gold: #ffb347; --gold-dim: rgba(255,179,71,0.12);
-    --purple: #a78bfa;
+  :root, [data-theme="dark"] {
+    --bg:#080c14; --bg2:#0f1520; --bg3:#161d2e; --bg4:#1c2538;
+    --border:#253044; --border2:#2f3d55;
+    --text:#dce4f0; --text-dim:#7a8ba4; --text-xs:#5a6a80;
+    --accent:#4f8ff7; --accent2:#6ba3ff;
+    --green:#ff4757; --green-dim:rgba(255,71,87,0.15);
+    --red:#00d98b; --red-dim:rgba(0,217,139,0.15);
+    --gold:#ffb347; --gold-dim:rgba(255,179,71,0.12);
+    --purple:#a78bfa;
+    --chart-bg:#080c14; --chart-grid:rgba(37,48,68,0.5); --chart-text:#7a8ba4;
+  }
+  [data-theme="light"] {
+    --bg:#f5f5f7; --bg2:#ffffff; --bg3:#e8eaed; --bg4:#dcdfe3;
+    --border:#d0d4db; --border2:#b8bcc4;
+    --text:#1a1a2e; --text-dim:#5a5a7a; --text-xs:#8a8aa0;
+    --accent:#3b7dd8; --accent2:#2b6cc4;
+    --green:#e63946; --green-dim:rgba(230,57,70,0.12);
+    --red:#2d9d6c; --red-dim:rgba(45,157,108,0.12);
+    --gold:#d4880f; --gold-dim:rgba(212,136,15,0.1);
+    --purple:#7c5cbf;
+    --chart-bg:#ffffff; --chart-grid:rgba(200,200,210,0.5); --chart-text:#5a5a7a;
   }
   * { margin:0; padding:0; box-sizing:border-box; }
   body { font-family:'Noto Sans SC','Microsoft YaHei',sans-serif; background:var(--bg); color:var(--text); font-size:14px; overflow-x:hidden; }
@@ -581,8 +607,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
   /* Date pickers */
   .date-group { display:flex; align-items:center; gap:4px; }
   .date-group label { color:var(--text-dim); font-size:12px; white-space:nowrap; }
-  .date-group input[type="date"] { background:var(--bg3); border:1px solid var(--border); color:var(--text); padding:6px 8px; border-radius:6px; font-size:13px; outline:none; cursor:pointer; color-scheme:dark; }
+  .date-group input[type="date"] { background:var(--bg3); border:1px solid var(--border); color:var(--text); padding:6px 8px; border-radius:6px; font-size:13px; outline:none; cursor:pointer; }
   .date-group input[type="date"]:focus { border-color:var(--accent); }
+  [data-theme="dark"] .date-group input[type="date"] { color-scheme:dark; }
+  [data-theme="light"] .date-group input[type="date"] { color-scheme:light; }
 
   /* Period tabs */
   .period-tabs { display:flex; gap:2px; background:var(--bg3); border-radius:6px; padding:2px; }
@@ -826,6 +854,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <span id="realtime-status" style="font-size:11px;color:var(--text-xs);margin-left:auto;white-space:nowrap;"></span>
   <label class="alert-toggle" style="margin-left:8px;"><input type="checkbox" id="alert-enabled" onchange="toggleAlerts()"> <span style="font-size:12px;color:var(--text-dim);">提醒</span></label>
   <label class="alert-toggle" style="margin-left:2px;"><input type="checkbox" id="alert-sound" checked onchange="toggleAlertSound()"> <span style="font-size:12px;color:var(--text-dim);">声音</span></label>
+  <button class="btn" id="theme-toggle" onclick="toggleTheme()" style="padding:4px 10px;font-size:12px;background:var(--bg3);color:var(--text-dim);border:1px solid var(--border);border-radius:4px;cursor:pointer;margin-left:4px;">☀</button>
 </div>
 
 <div class="alert-banner" id="alert-banner"></div>
@@ -871,6 +900,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <div class="chart-box"><div class="chart-label">K线 / EMA / 布林带</div><div id="chart-main"></div></div>
     <div class="chart-box"><div class="chart-label">MACD</div><div id="chart-macd"></div></div>
     <div class="chart-box"><div class="chart-label">RSI</div><div id="chart-rsi"></div></div>
+    <div class="chart-box"><div class="chart-label">KDJ</div><div id="chart-kdj" style="height:120px;"></div></div>
+    <div class="chart-box"><div class="chart-label">OBV</div><div id="chart-obv" style="height:120px;"></div></div>
     <div id="backtest-panel">
       <h3 style="color:var(--gold);margin-bottom:10px;font-size:15px;">回测结果 <span id="bt-strategy-label" style="color:var(--accent);font-size:13px;"></span></h3>
       <div class="bt-grid" id="bt-grid"></div>
@@ -1006,9 +1037,13 @@ let rsiSeries, rsiUpper, rsiLower;
 let chartsReady = false;
 let searchTimeout = null;
 
-const CHART_BG = '#080c14';
-const GRID_COLOR = 'rgba(37,48,68,0.5)';
-const TEXT_COLOR = '#7a8ba4';
+let CHART_BG = '#080c14';
+let GRID_COLOR = 'rgba(37,48,68,0.5)';
+let TEXT_COLOR = '#7a8ba4';
+
+let kdjChart, kdjKSeries, kdjDSeries, kdjJSeries, kdjUpper, kdjLower;
+let obvChart, obvSeries, obvMaSeries;
+let vwapSeries;
 
 // ---- Collapse ----
 function toggleCollapse(id) {
@@ -1111,9 +1146,9 @@ function initCharts() {
   mainChart.priceScale('vol').applyOptions({ scaleMargins:{top:0.85,bottom:0} });
   fastEmaSeries = mainChart.addLineSeries({ color:'#ffb347', lineWidth:1, title:'EMA快' });
   slowEmaSeries = mainChart.addLineSeries({ color:'#a78bfa', lineWidth:1, title:'EMA慢' });
-  bbUpperSeries = mainChart.addLineSeries({ color:'rgba(79,143,247,0.35)', lineWidth:1, lineStyle:2 });
-  bbBasisSeries = mainChart.addLineSeries({ color:'rgba(79,143,247,0.55)', lineWidth:1 });
-  bbLowerSeries = mainChart.addLineSeries({ color:'rgba(79,143,247,0.35)', lineWidth:1, lineStyle:2 });
+  bbUpperSeries = mainChart.addLineSeries({ color:'rgba(79,143,247,0.7)', lineWidth:1, lineStyle:2 });
+  bbBasisSeries = mainChart.addLineSeries({ color:'rgba(79,143,247,0.85)', lineWidth:1 });
+  bbLowerSeries = mainChart.addLineSeries({ color:'rgba(79,143,247,0.7)', lineWidth:1, lineStyle:2 });
 
   macdChart = LightweightCharts.createChart(document.getElementById('chart-macd'), { ...commonOpts, width: document.getElementById('chart-macd').clientWidth, height:130 });
   macdHistSeries = macdChart.addHistogramSeries({ priceFormat:{type:'price',precision:4,minMove:0.0001} });
@@ -1122,8 +1157,21 @@ function initCharts() {
 
   rsiChart = LightweightCharts.createChart(document.getElementById('chart-rsi'), { ...commonOpts, width: document.getElementById('chart-rsi').clientWidth, height:120 });
   rsiSeries = rsiChart.addLineSeries({ color:'#a78bfa', lineWidth:1.5, title:'RSI' });
-  rsiUpper = rsiChart.addLineSeries({ color:'rgba(255,71,87,0.25)', lineWidth:1, lineStyle:2 });
-  rsiLower = rsiChart.addLineSeries({ color:'rgba(0,217,139,0.25)', lineWidth:1, lineStyle:2 });
+  rsiUpper = rsiChart.addLineSeries({ color:'rgba(255,71,87,0.6)', lineWidth:1, lineStyle:2 });
+  rsiLower = rsiChart.addLineSeries({ color:'rgba(0,217,139,0.6)', lineWidth:1, lineStyle:2 });
+
+  vwapSeries = mainChart.addLineSeries({ color:'#e056fd', lineWidth:1.5, title:'VWAP', lineStyle:0 });
+
+  kdjChart = LightweightCharts.createChart(document.getElementById('chart-kdj'), { ...commonOpts, width: document.getElementById('chart-kdj').clientWidth, height:120 });
+  kdjKSeries = kdjChart.addLineSeries({ color:'#f7dc6f', lineWidth:1.5, title:'K' });
+  kdjDSeries = kdjChart.addLineSeries({ color:'#85c1e9', lineWidth:1.5, title:'D' });
+  kdjJSeries = kdjChart.addLineSeries({ color:'#e056fd', lineWidth:1.5, title:'J' });
+  kdjUpper = kdjChart.addLineSeries({ color:'rgba(255,71,87,0.5)', lineWidth:1, lineStyle:2 });
+  kdjLower = kdjChart.addLineSeries({ color:'rgba(0,217,139,0.5)', lineWidth:1, lineStyle:2 });
+
+  obvChart = LightweightCharts.createChart(document.getElementById('chart-obv'), { ...commonOpts, width: document.getElementById('chart-obv').clientWidth, height:120 });
+  obvSeries = obvChart.addLineSeries({ color:'#36d7b7', lineWidth:1.5, title:'OBV' });
+  obvMaSeries = obvChart.addLineSeries({ color:'#ffb347', lineWidth:1, title:'OBV MA20', lineStyle:2 });
 
   chartsReady = true;
   syncTimeScales();
@@ -1135,9 +1183,11 @@ function syncTimeScales() {
       if (range) targets.forEach(t => t.timeScale().setVisibleLogicalRange(range));
     });
   };
-  sync(mainChart, [macdChart, rsiChart]);
-  sync(macdChart, [mainChart, rsiChart]);
-  sync(rsiChart, [mainChart, macdChart]);
+  sync(mainChart, [macdChart, rsiChart, kdjChart, obvChart]);
+  sync(macdChart, [mainChart, rsiChart, kdjChart, obvChart]);
+  sync(rsiChart, [mainChart, macdChart, kdjChart, obvChart]);
+  sync(kdjChart, [mainChart, macdChart, rsiChart, obvChart]);
+  sync(obvChart, [mainChart, macdChart, rsiChart, kdjChart]);
 }
 
 function resizeCharts() {
@@ -1147,6 +1197,9 @@ function resizeCharts() {
   const dh = document.getElementById('chart-macd').clientHeight;
   const rh = document.getElementById('chart-rsi').clientHeight;
   mainChart.applyOptions({width:w, height:mh}); macdChart.applyOptions({width:w, height:dh}); rsiChart.applyOptions({width:w, height:rh});
+  const kh = document.getElementById('chart-kdj').clientHeight;
+  const oh = document.getElementById('chart-obv').clientHeight;
+  kdjChart.applyOptions({width:w, height:kh}); obvChart.applyOptions({width:w, height:oh});
 }
 window.addEventListener('resize', resizeCharts);
 
@@ -1231,6 +1284,23 @@ async function doAnalyze() {
       rsiUpper.setData([{time:t0,value:70},{time:t1,value:70}]);
       rsiLower.setData([{time:t0,value:30},{time:t1,value:30}]);
     }
+
+    // KDJ
+    kdjKSeries.setData(c.kdj_k||[]);
+    kdjDSeries.setData(c.kdj_d||[]);
+    kdjJSeries.setData(c.kdj_j||[]);
+    if ((c.kdj_k||[]).length > 1) {
+      const kt0 = c.kdj_k[0].time, kt1 = c.kdj_k[c.kdj_k.length-1].time;
+      kdjUpper.setData([{time:kt0,value:80},{time:kt1,value:80}]);
+      kdjLower.setData([{time:kt0,value:20},{time:kt1,value:20}]);
+    }
+
+    // OBV
+    obvSeries.setData(c.obv||[]);
+    obvMaSeries.setData(c.obv_ma||[]);
+
+    // VWAP
+    vwapSeries.setData(c.vwap||[]);
 
     mainChart.timeScale().fitContent();
     resizeCharts();
@@ -1379,6 +1449,13 @@ async function fetchRealtime() {
     }
     if (lb.rsi && lb.rsi.value != null) rsiSeries.update(lb.rsi);
 
+    if (lb.kdj_k && lb.kdj_k.value != null) kdjKSeries.update(lb.kdj_k);
+    if (lb.kdj_d && lb.kdj_d.value != null) kdjDSeries.update(lb.kdj_d);
+    if (lb.kdj_j && lb.kdj_j.value != null) kdjJSeries.update(lb.kdj_j);
+    if (lb.obv && lb.obv.value != null) obvSeries.update(lb.obv);
+    if (lb.obv_ma && lb.obv_ma.value != null) obvMaSeries.update(lb.obv_ma);
+    if (lb.vwap && lb.vwap.value != null) vwapSeries.update(lb.vwap);
+
     // 更新信号面板
     const s = data.signal;
     updateSignalPanel(s);
@@ -1505,7 +1582,7 @@ function drawEquityCurve(data) {
   areaSeries.setData(data);
 
   // 初始资金基准线
-  const baseline = equityChart.addLineSeries({ color:'rgba(255,255,255,0.15)', lineWidth:1, lineStyle:2 });
+  const baseline = equityChart.addLineSeries({ color:'rgba(255,255,255,0.5)', lineWidth:1.5, lineStyle:2 });
   baseline.setData([
     { time: data[0].time, value: data[0].value },
     { time: data[data.length-1].time, value: data[0].value },
@@ -1626,6 +1703,49 @@ async function doCompare() {
     panel.scrollIntoView({behavior:'smooth'});
   } catch(e) { alert('策略对比失败: '+e.message); } finally { hideSpinner(); }
 }
+
+// ---- Theme ----
+function getChartTheme() {
+  const cs = getComputedStyle(document.documentElement);
+  return {
+    bg: cs.getPropertyValue('--chart-bg').trim() || '#080c14',
+    grid: cs.getPropertyValue('--chart-grid').trim() || 'rgba(37,48,68,0.5)',
+    text: cs.getPropertyValue('--chart-text').trim() || '#7a8ba4',
+  };
+}
+
+function applyThemeToCharts() {
+  const t = getChartTheme();
+  const opts = { layout:{background:{color:t.bg},textColor:t.text}, grid:{vertLines:{color:t.grid},horzLines:{color:t.grid}} };
+  if (mainChart) mainChart.applyOptions(opts);
+  if (macdChart) macdChart.applyOptions(opts);
+  if (rsiChart) rsiChart.applyOptions(opts);
+  if (kdjChart) kdjChart.applyOptions(opts);
+  if (obvChart) obvChart.applyOptions(opts);
+  if (equityChart) equityChart.applyOptions(opts);
+  if (compareChart) compareChart.applyOptions(opts);
+}
+
+function toggleTheme() {
+  const current = document.documentElement.getAttribute('data-theme') || 'dark';
+  const next = current === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  document.getElementById('theme-toggle').textContent = next === 'dark' ? '☀' : '🌙';
+  localStorage.setItem('theme', next);
+  const t = getChartTheme();
+  CHART_BG = t.bg; GRID_COLOR = t.grid; TEXT_COLOR = t.text;
+  applyThemeToCharts();
+}
+
+(function(){
+  const saved = localStorage.getItem('theme');
+  if (saved === 'light') {
+    document.documentElement.setAttribute('data-theme', 'light');
+    document.addEventListener('DOMContentLoaded', () => {
+      document.getElementById('theme-toggle').textContent = '🌙';
+    });
+  }
+})();
 
 // ---- Alert Engine ----
 const alertCooldown = {};
