@@ -289,6 +289,20 @@ def api_presets():
     return jsonify(get_preset_list())
 
 
+@app.route("/api/mtf")
+def api_mtf():
+    symbol = request.args.get("symbol", "688110").strip()
+    start = request.args.get("start", "20240101").strip()
+    end = request.args.get("end", "").strip()
+    try:
+        from src.extensions import MTFConfig, compute_mtf_signals
+        config = MTFConfig(enabled=True, periods=["daily", "weekly"])
+        result = compute_mtf_signals(symbol, start, end, config)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/watchlist")
 def api_watchlist_get():
     return jsonify(_load_watchlist())
@@ -432,9 +446,12 @@ def api_backtest():
     if v:
         p.price_mode = v
 
-    initial_capital = float(request.args.get("initial_capital", "1000000"))
-    commission = float(request.args.get("commission", "0.001"))
-    stamp_tax = float(request.args.get("stamp_tax", "0.001"))
+    try:
+        initial_capital = float(request.args.get("initial_capital", "1000000"))
+        commission = float(request.args.get("commission", "0.001"))
+        stamp_tax = float(request.args.get("stamp_tax", "0.001"))
+    except (ValueError, TypeError):
+        initial_capital, commission, stamp_tax = 1000000.0, 0.001, 0.001
 
     # 止盈止损参数
     stop_config = None
@@ -450,15 +467,36 @@ def api_backtest():
     except (ValueError, TypeError):
         pass
 
+    # 仓位管理参数
+    position_config = None
+    pos_mode = request.args.get("position_mode", "full").strip()
+    try:
+        pos_pct = float(request.args.get("position_pct", "1.0"))
+    except (ValueError, TypeError):
+        pos_pct = 1.0
+    if pos_mode != "full":
+        from src.extensions import PositionConfig
+        position_config = PositionConfig(mode=pos_mode, position_pct=pos_pct)
+
     try:
         df = fetch_stock_daily(symbol, start, end)
     except Exception as e:
         return jsonify({"error": f"数据获取失败: {e}"}), 400
 
+    weekly_signals_df = None
+    if strategy == "mtf_confirm":
+        try:
+            weekly_df = fetch_stock_daily(symbol, start, end, period="weekly")
+            weekly_signals_df = compute_signals(weekly_df, p)
+        except Exception:
+            pass
+
     try:
         result = backtest(df, params=p, initial_capital=initial_capital,
                           commission=commission, stamp_tax=stamp_tax,
-                          strategy=strategy, stop_config=stop_config)
+                          strategy=strategy, stop_config=stop_config,
+                          position_config=position_config,
+                          weekly_signals_df=weekly_signals_df)
     except Exception as e:
         return jsonify({"error": f"回测失败: {e}"}), 500
 
@@ -510,9 +548,12 @@ def api_backtest_compare():
     if v:
         p.price_mode = v
 
-    initial_capital = float(request.args.get("initial_capital", "1000000"))
-    commission = float(request.args.get("commission", "0.001"))
-    stamp_tax = float(request.args.get("stamp_tax", "0.001"))
+    try:
+        initial_capital = float(request.args.get("initial_capital", "1000000"))
+        commission = float(request.args.get("commission", "0.001"))
+        stamp_tax = float(request.args.get("stamp_tax", "0.001"))
+    except (ValueError, TypeError):
+        initial_capital, commission, stamp_tax = 1000000.0, 0.001, 0.001
 
     # 止盈止损参数
     stop_config = None
@@ -528,15 +569,36 @@ def api_backtest_compare():
     except (ValueError, TypeError):
         pass
 
+    # 仓位管理参数
+    position_config = None
+    pos_mode = request.args.get("position_mode", "full").strip()
+    try:
+        pos_pct = float(request.args.get("position_pct", "1.0"))
+    except (ValueError, TypeError):
+        pos_pct = 1.0
+    if pos_mode != "full":
+        from src.extensions import PositionConfig
+        position_config = PositionConfig(mode=pos_mode, position_pct=pos_pct)
+
     try:
         df = fetch_stock_daily(symbol, start, end)
     except Exception as e:
         return jsonify({"error": f"数据获取失败: {e}"}), 400
 
+    weekly_signals_df = None
+    if strategy_ids is None or "mtf_confirm" in (strategy_ids or []):
+        try:
+            weekly_df = fetch_stock_daily(symbol, start, end, period="weekly")
+            weekly_signals_df = compute_signals(weekly_df, p)
+        except Exception:
+            pass
+
     try:
         results = backtest_compare(df, params=p, initial_capital=initial_capital,
                                    commission=commission, stamp_tax=stamp_tax,
-                                   strategy_ids=strategy_ids, stop_config=stop_config)
+                                   strategy_ids=strategy_ids, stop_config=stop_config,
+                                   position_config=position_config,
+                                   weekly_signals_df=weekly_signals_df)
     except Exception as e:
         return jsonify({"error": f"策略对比失败: {e}"}), 500
 
@@ -858,6 +920,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <span id="realtime-status" style="font-size:11px;color:var(--text-xs);margin-left:auto;white-space:nowrap;"></span>
   <label class="alert-toggle" style="margin-left:8px;"><input type="checkbox" id="alert-enabled" onchange="toggleAlerts()"> <span style="font-size:12px;color:var(--text-dim);">提醒</span></label>
   <label class="alert-toggle" style="margin-left:2px;"><input type="checkbox" id="alert-sound" checked onchange="toggleAlertSound()"> <span style="font-size:12px;color:var(--text-dim);">声音</span></label>
+  <label class="alert-toggle" style="margin-left:2px;"><input type="checkbox" id="mtf-toggle" onchange="toggleMTF()"> <span style="font-size:12px;color:var(--text-dim);">多周期</span></label>
   <button class="btn" id="theme-toggle" onclick="toggleTheme()" style="padding:4px 10px;font-size:12px;background:var(--bg3);color:var(--text-dim);border:1px solid var(--border);border-radius:4px;cursor:pointer;margin-left:4px;">☀</button>
 </div>
 
@@ -963,6 +1026,14 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <div class="row"><span class="lbl">阻力位</span><span class="val" id="sig-resist">--</span></div>
     </div>
 
+    <div class="card" id="mtf-card" style="display:none;">
+      <div class="card-title"><span class="icon">&#x1F310;</span> 多周期共振</div>
+      <div class="row"><span class="lbl">周线趋势</span><span class="val" id="mtf-wk-trend">--</span></div>
+      <div class="row"><span class="lbl">周线多头</span><span class="val" id="mtf-wk-bull">--</span></div>
+      <div class="row"><span class="lbl">周线空头</span><span class="val" id="mtf-wk-bear">--</span></div>
+      <div class="row"><span class="lbl">共振确认</span><span class="val" id="mtf-confirm">--</span></div>
+    </div>
+
     <!-- 信号参数 -->
     <div class="card">
       <div class="card-title"><span class="icon">&#x2699;</span> 指标参数 <button class="collapse-btn" onclick="toggleCollapse('params-signal')">[展开/收起]</button></div>
@@ -1004,6 +1075,16 @@ HTML_PAGE = r"""<!DOCTYPE html>
           <div class="param-item"><label>止盈(%)</label><input type="number" id="bt-tp" value="0" step="1" min="0" max="100"></div>
           <div class="param-item"><label>移动止损(%)</label><input type="number" id="bt-tsl" value="0" step="1" min="0" max="50"></div>
           <div class="param-item"><label>ATR止损(倍)</label><input type="number" id="bt-atrsl" value="0" step="0.5" min="0" max="10"></div>
+        </div>
+        <div class="params-grid" style="margin-top:8px;">
+          <div class="param-item"><label>仓位模式</label>
+            <select id="bt-pos-mode" style="width:100%;padding:5px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:13px;">
+              <option value="full">全仓(100%)</option>
+              <option value="fixed_pct">固定比例</option>
+              <option value="kelly">凯利公式</option>
+            </select>
+          </div>
+          <div class="param-item"><label>仓位比例(%)</label><input type="number" id="bt-pos-pct" value="100" step="5" min="5" max="100"></div>
         </div>
       </div>
     </div>
@@ -1315,6 +1396,7 @@ async function doAnalyze() {
     // Sidebar
     const s = data.signal;
     updateSignalPanel(s);
+    if (mtfEnabled) fetchMTF();
 
   } catch(e) { alert('请求失败: '+e.message); } finally { hideSpinner(); startRealtime(); }
 }
@@ -1335,6 +1417,7 @@ async function doBacktest() {
       `&strategy=${g('bt-strategy')}` +
       `&initial_capital=${g('bt-capital')}&commission=${g('bt-commission')}&stamp_tax=${g('bt-tax')}` +
       `&stop_loss_pct=${parseFloat(g('bt-sl'))/100}&take_profit_pct=${parseFloat(g('bt-tp'))/100}&trailing_stop_pct=${parseFloat(g('bt-tsl'))/100}&atr_stop_mult=${g('bt-atrsl')}` +
+      `&position_mode=${g('bt-pos-mode')}&position_pct=${parseFloat(g('bt-pos-pct'))/100}` +
       getSignalParams();
     const resp = await fetch(url);
     const data = await resp.json();
@@ -1628,6 +1711,7 @@ async function doCompare() {
     const url = `/api/backtest/compare?symbol=${currentSymbol}&start=${start}&end=${end}&strategies=${selected.join(',')}` +
       `&initial_capital=${g('bt-capital')}&commission=${g('bt-commission')}&stamp_tax=${g('bt-tax')}` +
       `&stop_loss_pct=${parseFloat(g('bt-sl'))/100}&take_profit_pct=${parseFloat(g('bt-tp'))/100}&trailing_stop_pct=${parseFloat(g('bt-tsl'))/100}&atr_stop_mult=${g('bt-atrsl')}` +
+      `&position_mode=${g('bt-pos-mode')}&position_pct=${parseFloat(g('bt-pos-pct'))/100}` +
       getSignalParams();
     const resp = await fetch(url);
     const data = await resp.json();
@@ -1750,6 +1834,51 @@ function toggleTheme() {
       document.getElementById('theme-toggle').textContent = '🌙';
       const t = getChartTheme();
       CHART_BG = t.bg; GRID_COLOR = t.grid; TEXT_COLOR = t.text;
+    });
+  }
+})();
+
+// ---- MTF ----
+let mtfEnabled = false;
+
+function toggleMTF() {
+  mtfEnabled = document.getElementById('mtf-toggle').checked;
+  localStorage.setItem('mtfEnabled', mtfEnabled);
+  document.getElementById('mtf-card').style.display = mtfEnabled ? 'block' : 'none';
+  if (mtfEnabled && currentSymbol) fetchMTF();
+}
+
+async function fetchMTF() {
+  if (!mtfEnabled || !currentSymbol) return;
+  try {
+    const start = getStartDate();
+    const resp = await fetch(`/api/mtf?symbol=${currentSymbol}&start=${start}`);
+    const data = await resp.json();
+    if (data.error) return;
+    const wk = data.details && data.details.weekly;
+    if (wk) {
+      const tEl = document.getElementById('mtf-wk-trend');
+      tEl.textContent = wk.trend;
+      tEl.className = 'val ' + (wk.trend==='上涨'?'val-green':wk.trend==='下跌'?'val-red':'val-gold');
+      document.getElementById('mtf-wk-bull').textContent = wk.bull_score + '/6';
+      document.getElementById('mtf-wk-bear').textContent = wk.bear_score + '/6';
+    }
+    const cfEl = document.getElementById('mtf-confirm');
+    if (data.confirmed_bull) { cfEl.textContent = '多头共振'; cfEl.className = 'val val-green'; }
+    else if (data.confirmed_bear) { cfEl.textContent = '空头共振'; cfEl.className = 'val val-red'; }
+    else { cfEl.textContent = '未确认'; cfEl.className = 'val val-gold'; }
+  } catch(e) {}
+}
+
+// Restore MTF state
+(function(){
+  const saved = localStorage.getItem('mtfEnabled');
+  if (saved === 'true') {
+    mtfEnabled = true;
+    document.addEventListener('DOMContentLoaded', () => {
+      const cb = document.getElementById('mtf-toggle');
+      if (cb) cb.checked = true;
+      document.getElementById('mtf-card').style.display = 'block';
     });
   }
 })();

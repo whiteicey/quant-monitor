@@ -97,31 +97,35 @@ def apply_stop_rules(price: float, low: float, high: float, entry_price: float,
 @dataclass
 class PositionConfig:
     """仓位管理配置"""
-    mode: str = "full"           # "full"(全仓), "fixed_pct"(固定比例), "kelly"(凯利公式), "pyramid"(金字塔)
+    mode: str = "full"           # "full"(全仓), "fixed_pct"(固定比例), "kelly"(凯利公式)
     position_pct: float = 1.0    # fixed_pct模式下每次买入占总资金的比例
     max_positions: int = 1       # 最大同时持仓数量（多股票时用）
-    pyramid_count: int = 3       # 金字塔模式分几次建仓
+    pyramid_count: int = 3       # 预留字段
 
 
-def calc_position_size(capital: float, price: float, config: PositionConfig,
+def calc_position_size(capital: float, effective_price: float, config: PositionConfig = None,
                        win_rate: float = 0.5, avg_win_loss_ratio: float = 1.0) -> int:
     """
     计算买入股数
-    TODO: 实现kelly/pyramid等模式
+    effective_price: 含手续费的单价 (price * (1 + commission))
     """
-    if config.mode == "fixed_pct":
+    if capital <= 0 or effective_price <= 0:
+        return 0
+    if config is None or config.mode == "full":
+        amount = capital
+    elif config.mode == "fixed_pct":
         amount = capital * config.position_pct
     elif config.mode == "kelly":
-        # Kelly: f = (p*b - q) / b, where p=win_rate, q=1-p, b=avg_win_loss_ratio
-        kelly_pct = max(0, (win_rate * avg_win_loss_ratio - (1 - win_rate)) / avg_win_loss_ratio)
+        p, b = win_rate, avg_win_loss_ratio
+        kelly_pct = max(0, (p * b - (1 - p)) / b) if b > 0 else 0
         kelly_pct = min(kelly_pct, 0.5)  # 半Kelly
-        amount = capital * kelly_pct
-    else:  # full
+        amount = capital * kelly_pct if kelly_pct > 0.01 else capital * 0.1  # 最少10%
+    else:
         amount = capital
 
-    shares = int(amount / price / 100) * 100
-    if shares == 0 and int(amount / price) >= 1:
-        shares = int(amount / price)
+    shares = int(amount / effective_price / 100) * 100
+    if shares == 0 and int(amount / effective_price) >= 1:
+        shares = int(amount / effective_price)
     return shares
 
 
@@ -179,15 +183,51 @@ class MTFConfig:
     require_all: bool = True  # True=所有周期同向才确认, False=多数同向即可
 
 
-def compute_mtf_signals(symbol: str, config: MTFConfig = None):
+def compute_mtf_signals(symbol: str, start: str = "20240101", end: str = "", config: MTFConfig = None):
     """
     多周期共振信号计算
-    TODO: 获取多个周期数据，分别计算信号，合并确认
-    返回 {"daily": SignalResult, "weekly": SignalResult, "confirmed_bull": bool, "confirmed_bear": bool}
+    返回 {"confirmed_bull": bool, "confirmed_bear": bool, "details": {period: {...}}}
     """
-    # 预留接口
+    if config is None:
+        config = MTFConfig()
+    
+    from .data import fetch_stock_daily, merge_realtime_bar, fetch_realtime_quote
+    from .signals import compute_signals, get_latest_signal, SignalParams
+    from dataclasses import asdict
+    
+    details = {}
+    for period in config.periods:
+        try:
+            df = fetch_stock_daily(symbol, start, end, period=period)
+            try:
+                q = fetch_realtime_quote(symbol)
+                df = merge_realtime_bar(df, q)
+            except Exception:
+                pass
+            sig_df = compute_signals(df)
+            signal = get_latest_signal(sig_df)
+            details[period] = {
+                "trend": signal.trend,
+                "bull_score": signal.bullish_signals,
+                "bear_score": signal.bearish_signals,
+                "rsi": signal.rsi_value,
+                "strong_buy": signal.strong_buy,
+                "weak_buy": signal.weak_buy,
+                "strong_sell": signal.strong_sell,
+                "weak_sell": signal.weak_sell,
+            }
+        except Exception:
+            details[period] = {"trend": "--", "bull_score": 0, "bear_score": 0}
+    
+    bull_votes = sum(1 for p in config.periods if details.get(p, {}).get("trend") == "上涨")
+    bear_votes = sum(1 for p in config.periods if details.get(p, {}).get("trend") == "下跌")
+    threshold = len(config.periods) if config.require_all else max(1, len(config.periods) // 2 + 1)
+    
     return {
-        "confirmed_bull": False,
-        "confirmed_bear": False,
-        "details": {},
+        "confirmed_bull": bull_votes >= threshold,
+        "confirmed_bear": bear_votes >= threshold,
+        "bull_votes": bull_votes,
+        "bear_votes": bear_votes,
+        "total": len(config.periods),
+        "details": details,
     }

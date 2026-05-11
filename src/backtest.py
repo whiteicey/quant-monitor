@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 from dataclasses import dataclass
 from .signals import compute_signals, SignalParams
-from .extensions import StopConfig, apply_stop_rules
+from .extensions import StopConfig, apply_stop_rules, PositionConfig, calc_position_size
 
 
 @dataclass
@@ -100,6 +100,18 @@ def _strategy_support_resistance(df):
     return buy, sell
 
 
+def _strategy_mtf_confirm(df):
+    """多周期共振：日线买入信号 + 周线趋势确认"""
+    import pandas as pd
+    daily_buy = df["macd_golden_cross"] | (df["bull_score"] >= 4)
+    weekly_bull = df.get("weekly_ema_bullish", pd.Series(True, index=df.index)).fillna(True)
+    buy = daily_buy & weekly_bull
+    daily_sell = df["death_cross"] | (df["bear_score"] >= 4)
+    weekly_bear = df.get("weekly_ema_bearish", pd.Series(False, index=df.index)).fillna(False)
+    sell = daily_sell | weekly_bear
+    return buy, sell
+
+
 # 策略注册表
 STRATEGIES = {
     "macd_rsi":          ("MACD金叉+RSI超买", _strategy_macd_rsi,          "实测胜率最高，MACD金叉买入，RSI>70卖出"),
@@ -114,6 +126,7 @@ STRATEGIES = {
     "score_strong":      ("综合评分(严格)",    _strategy_score_strong,      "评分>=5且需金叉确认，信号极少"),
     "macd_cross":        ("纯MACD交叉",       _strategy_macd_cross,        "经典MACD金叉死叉"),
     "ema_cross":         ("纯EMA交叉",        _strategy_ema_cross,         "经典EMA金叉死叉"),
+    "mtf_confirm":       ("多周期共振",          _strategy_mtf_confirm,       "日线信号+周线趋势确认，减少假信号"),
 }
 
 
@@ -229,6 +242,7 @@ STRATEGY_RECOMMENDED_PRESET = {
     "score_strong": "default",
     "macd_cross": "macd_standard",
     "ema_cross": "trend_fast",
+    "mtf_confirm": "macd_standard",
 }
 
 # 反向映射：预设→推荐策略（只保留1:1唯一映射）
@@ -272,6 +286,19 @@ def get_preset_list() -> list:
     return result
 
 
+def _merge_weekly_signals(daily_df, weekly_signals_df):
+    """将周线信号forward-fill到日线索引"""
+    weekly_cols = ["ema_bullish", "ema_bearish", "macd_bullish", "macd_bearish", 
+                   "bull_score", "bear_score"]
+    available = [c for c in weekly_cols if c in weekly_signals_df.columns]
+    if not available:
+        return daily_df
+    weekly_subset = weekly_signals_df[available].copy()
+    weekly_subset.columns = [f"weekly_{c}" for c in available]
+    merged = weekly_subset.reindex(daily_df.index, method="ffill")
+    return pd.concat([daily_df, merged], axis=1)
+
+
 def backtest(
     df: pd.DataFrame,
     params: SignalParams = None,
@@ -280,6 +307,8 @@ def backtest(
     stamp_tax: float = 0.001,
     strategy: str = "macd_rsi",
     stop_config=None,
+    position_config=None,
+    weekly_signals_df=None,
     # 保持向后兼容
     use_strong_only: bool = False,
 ) -> BacktestResult:
@@ -288,6 +317,9 @@ def backtest(
     strategy: 策略ID，见 STRATEGIES 字典
     """
     signals_df = compute_signals(df, params)
+
+    if weekly_signals_df is not None:
+        signals_df = _merge_weekly_signals(signals_df, weekly_signals_df)
 
     # 向后兼容旧参数
     if strategy == "macd_rsi" and use_strong_only:
@@ -347,10 +379,17 @@ def backtest(
             max_price_since_entry = 0.0
 
         elif is_buy and position == 0:
-            max_shares = int(capital / (price * (1 + commission)))
-            shares = (max_shares // 100) * 100
-            if shares == 0 and max_shares >= 1:
-                shares = max_shares
+            # Kelly模式：用历史胜率计算
+            hist_wr, hist_ratio = 0.5, 1.0
+            if position_config and position_config.mode == "kelly" and len(trades) >= 10:
+                wins = sum(1 for t in trades if t["pnl"] > 0)
+                losses = len(trades) - wins
+                hist_wr = wins / len(trades) if trades else 0.5
+                avg_win = sum(t["return_pct"] for t in trades if t["pnl"] > 0) / max(wins, 1)
+                avg_loss = abs(sum(t["return_pct"] for t in trades if t["pnl"] <= 0) / max(losses, 1))
+                hist_ratio = avg_win / avg_loss if avg_loss > 0 else 1.0
+            shares = calc_position_size(capital, price * (1 + commission), position_config,
+                                         win_rate=hist_wr, avg_win_loss_ratio=hist_ratio)
             if shares > 0:
                 cost = shares * price * (1 + commission)
                 capital -= cost
@@ -443,6 +482,8 @@ def backtest_compare(
     stamp_tax: float = 0.001,
     strategy_ids: list = None,
     stop_config=None,
+    position_config=None,
+    weekly_signals_df=None,
 ) -> list:
     """
     对指定策略跑回测并返回对比数据
@@ -461,7 +502,8 @@ def backtest_compare(
         # Call backtest which will reuse cached data
         result = backtest(df, params=params, initial_capital=initial_capital,
                          commission=commission, stamp_tax=stamp_tax, strategy=sid,
-                         stop_config=stop_config)
+                         stop_config=stop_config, position_config=position_config,
+                         weekly_signals_df=weekly_signals_df)
         results.append({
             "strategy_id": sid,
             "strategy_name": result.strategy_name,
