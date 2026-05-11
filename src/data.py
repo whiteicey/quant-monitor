@@ -25,6 +25,7 @@ _CACHE_TTL = {
     "15min": 30,      # 15min缓存30秒
     "search": 600,    # 搜索结果缓存10分钟
     "info": 3600,     # 股票名称缓存1小时
+    "sector": 120,     # 板块排名缓存2分钟
     "realtime": 5,    # 实时行情缓存5秒
 }
 
@@ -54,6 +55,16 @@ def _cache_cleanup():
     expired = [k for k, v in _cache.items() if now - v["ts"] > 3600]  # Remove anything older than 1 hour
     for k in expired:
         del _cache[k]
+
+
+def _strip_jsonp(text):
+    """Strip JSONP wrapper: callback({...}); → {...}"""
+    text = text.strip()
+    if text.startswith("(") and (")" in text):
+        text = text[text.index("(") + 1 : text.rindex(")")]
+    elif re.match(r'^[a-zA-Z_]\w*\(', text):
+        text = text[text.index("(") + 1 : text.rindex(")")]
+    return text
 
 
 def _session() -> requests.Session:
@@ -445,3 +456,78 @@ def merge_realtime_bar(df, quote):
         df = pd.concat([df, new_row])
 
     return df
+
+
+def fetch_sector_info(symbol: str) -> dict:
+    """获取股票所属板块信息"""
+    cached = _cache_get(f"sector_info:{symbol}", "info")
+    if cached is not None:
+        return cached
+    
+    _, secid = _market_prefix(symbol)
+    sess = _session()
+    try:
+        r = sess.get(
+            f"https://push2.eastmoney.com/api/qt/stock/get",
+            params={"secid": secid, "fields": "f57,f58,f127,f128,f129", "cb": ""},
+            timeout=5,
+        )
+        r.encoding = "utf-8"
+        data = json.loads(_strip_jsonp(r.text)).get("data", {})
+        result = {
+            "industry": data.get("f127", "") or "",
+            "region": data.get("f128", "") or "",
+            "concepts": [c.strip() for c in (data.get("f129", "") or "").split(",") if c.strip()],
+        }
+        _cache_set(f"sector_info:{symbol}", result)
+        return result
+    except Exception:
+        return {"industry": "", "region": "", "concepts": []}
+
+
+def fetch_sector_ranking(top_n: int = 5) -> dict:
+    """获取板块涨跌排名"""
+    cached = _cache_get("sector_ranking", "sector")
+    if cached is not None:
+        return cached
+    
+    sess = _session()
+    result = {"strongest": [], "weakest": []}
+    
+    try:
+        # 最强板块
+        r = sess.get(
+            "https://push2.eastmoney.com/api/qt/clist/get",
+            params={"pn": "1", "pz": str(top_n), "fid": "f3", "fs": "m:90+t:2",
+                    "fields": "f2,f3,f4,f12,f14", "po": "1", "cb": ""},
+            timeout=5,
+        )
+        r.encoding = "utf-8"
+        data = json.loads(_strip_jsonp(r.text)).get("data", {}).get("diff", {})
+        items = list(data.values()) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+        for item in items[:top_n]:
+            result["strongest"].append({
+                "name": item.get("f14", ""),
+                "change_pct": round(item.get("f3", 0) / 100, 2),
+            })
+        
+        # 最弱板块
+        r2 = sess.get(
+            "https://push2.eastmoney.com/api/qt/clist/get",
+            params={"pn": "1", "pz": str(top_n), "fid": "f3", "fs": "m:90+t:2",
+                    "fields": "f2,f3,f4,f12,f14", "po": "0", "cb": ""},
+            timeout=5,
+        )
+        r2.encoding = "utf-8"
+        data2 = json.loads(_strip_jsonp(r2.text)).get("data", {}).get("diff", {})
+        items = list(data2.values()) if isinstance(data2, dict) else (data2 if isinstance(data2, list) else [])
+        for item in items[:top_n]:
+            result["weakest"].append({
+                "name": item.get("f14", ""),
+                "change_pct": round(item.get("f3", 0) / 100, 2),
+            })
+    except Exception:
+        pass
+    
+    _cache_set("sector_ranking", result)
+    return result

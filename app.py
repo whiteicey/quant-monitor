@@ -303,6 +303,26 @@ def api_mtf():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/sector")
+def api_sector():
+    symbol = request.args.get("symbol", "").strip()
+    if not symbol:
+        return jsonify({"error": "缺少股票代码"}), 400
+    try:
+        from src.data import fetch_sector_info, fetch_sector_ranking
+        info = fetch_sector_info(symbol)
+        ranking = fetch_sector_ranking(5)
+        return jsonify({
+            "industry": info.get("industry", ""),
+            "region": info.get("region", ""),
+            "concepts": info.get("concepts", []),
+            "strongest": ranking.get("strongest", []),
+            "weakest": ranking.get("weakest", []),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/watchlist")
 def api_watchlist_get():
     return jsonify(_load_watchlist())
@@ -835,6 +855,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .alert-toggle { display:flex; align-items:center; gap:8px; padding:8px 0; font-size:13px; }
   .alert-toggle input[type="checkbox"] { accent-color:var(--accent); width:16px; height:16px; }
 
+  /* Drawing toolbar */
+  .draw-toolbar { position:absolute; top:28px; left:8px; z-index:10; display:flex; gap:4px; }
+  .draw-btn { background:var(--bg3); border:1px solid var(--border); color:var(--text-dim); padding:4px 8px; border-radius:4px; cursor:pointer; font-size:11px; transition:.2s; }
+  .draw-btn:hover { border-color:var(--accent); color:var(--text); }
+  .draw-btn.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+
   @media(max-width:1000px){
     .main { flex-direction:column; height:auto; overflow:visible; }
     .sidebar { width:100%; min-width:0; border-left:none; border-top:1px solid var(--border); max-height:none; }
@@ -875,6 +901,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
     #chart-obv { height:80px; }
     .wl-add-wrap input { width:150px; }
     .compare-table th, .compare-table td { padding:4px 4px; font-size:11px; }
+    .draw-toolbar { position:static; margin:4px 8px; }
+    .draw-btn { padding:3px 6px; font-size:10px; }
   }
 </style>
 </head>
@@ -964,7 +992,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <div id="view-detail" style="display:none;flex:1;min-width:0;overflow:hidden;">
     <div style="display:flex;width:100%;height:100%;">
   <div class="chart-area">
-    <div class="chart-box"><div class="chart-label">K线 / EMA / 布林带</div><div id="chart-main"></div></div>
+    <div class="chart-box" style="position:relative;"><div class="chart-label">K线 / EMA / 布林带</div><div class="draw-toolbar"><button class="draw-btn" id="draw-hline" onclick="setDrawMode('hline')">— 水平线</button><button class="draw-btn" id="draw-trendline" onclick="setDrawMode('trendline')">╱ 趋势线</button><button class="draw-btn" onclick="clearDrawings()">✕ 清除</button></div><div id="chart-main"></div></div>
     <div class="chart-box"><div class="chart-label">MACD</div><div id="chart-macd"></div></div>
     <div class="chart-box"><div class="chart-label">RSI</div><div id="chart-rsi"></div></div>
     <div class="chart-box"><div class="chart-label">KDJ</div><div id="chart-kdj" style="height:120px;"></div></div>
@@ -1032,6 +1060,17 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <div class="row"><span class="lbl">周线多头</span><span class="val" id="mtf-wk-bull">--</span></div>
       <div class="row"><span class="lbl">周线空头</span><span class="val" id="mtf-wk-bear">--</span></div>
       <div class="row"><span class="lbl">共振确认</span><span class="val" id="mtf-confirm">--</span></div>
+    </div>
+
+    <div class="card" id="sector-card">
+      <div class="card-title"><span class="icon">&#x1F3ED;</span> 板块联动</div>
+      <div class="row"><span class="lbl">所属行业</span><span class="val" id="sector-industry">--</span></div>
+      <div class="row"><span class="lbl">所属地域</span><span class="val" id="sector-region" style="font-size:12px;">--</span></div>
+      <div class="row"><span class="lbl">概念板块</span><span class="val" id="sector-concepts" style="font-size:11px;word-break:break-all;">--</span></div>
+      <div style="margin-top:10px;font-size:11px;color:var(--text-dim);border-top:1px solid var(--border);padding-top:8px;">今日板块强弱 TOP5</div>
+      <div id="sector-strongest" style="margin-top:4px;"></div>
+      <div style="margin-top:8px;font-size:11px;color:var(--text-dim);">最弱 TOP5</div>
+      <div id="sector-weakest" style="margin-top:4px;"></div>
     </div>
 
     <!-- 信号参数 -->
@@ -1207,6 +1246,154 @@ function getEndDate() {
 // Set default end date to today
 document.getElementById('inp-end').value = new Date().toISOString().split('T')[0];
 
+// ---- Sector Analysis ----
+async function fetchSector() {
+  if (!currentSymbol) return;
+  try {
+    const resp = await fetch('/api/sector?symbol=' + currentSymbol);
+    const data = await resp.json();
+    if (data.error) return;
+    
+    document.getElementById('sector-industry').textContent = data.industry || '--';
+    document.getElementById('sector-region').textContent = data.region || '--';
+    document.getElementById('sector-concepts').textContent = (data.concepts || []).slice(0, 5).join(', ') || '--';
+    
+    const renderRank = (items, containerId) => {
+      const el = document.getElementById(containerId);
+      if (!items || !items.length) { el.innerHTML = '<div style="color:var(--text-xs);font-size:11px;">暂无数据</div>'; return; }
+      el.innerHTML = items.map(item => {
+        const cls = item.change_pct >= 0 ? 'val-green' : 'val-red';
+        const sign = item.change_pct >= 0 ? '+' : '';
+        return `<div class="row" style="font-size:12px;"><span class="lbl">${item.name}</span><span class="val ${cls}">${sign}${item.change_pct}%</span></div>`;
+      }).join('');
+    };
+    renderRank(data.strongest, 'sector-strongest');
+    renderRank(data.weakest, 'sector-weakest');
+  } catch(e) {}
+}
+
+// ---- Drawing Tools ----
+let drawMode = null; // null, 'hline', 'trendline'
+let drawings = []; // [{type, data, refs}]
+let trendlineFirstPoint = null;
+
+function setDrawMode(mode) {
+  if (drawMode === mode) { drawMode = null; } else { drawMode = mode; }
+  document.querySelectorAll('.draw-btn').forEach(b => b.classList.remove('active'));
+  if (drawMode) document.getElementById('draw-' + drawMode).classList.add('active');
+  trendlineFirstPoint = null;
+}
+
+function initDrawingEvents() {
+  if (!mainChart || !candleSeries) return;
+  mainChart.subscribeClick(param => {
+    if (!drawMode || !param.point || !param.time) return;
+    const price = candleSeries.coordinateToPrice(param.point.y);
+    if (isNaN(price)) return;
+    
+    if (drawMode === 'hline') {
+      const line = candleSeries.createPriceLine({
+        price: price,
+        color: '#ffb347',
+        lineWidth: 1,
+        lineStyle: 2,
+        axisLabelVisible: true,
+        title: price.toFixed(2),
+      });
+      drawings.push({ type: 'hline', price: price, ref: line });
+      saveDrawings();
+      setDrawMode(null);
+    }
+    else if (drawMode === 'trendline') {
+      if (!trendlineFirstPoint) {
+        trendlineFirstPoint = { time: param.time, price: price };
+      } else {
+        const series = mainChart.addLineSeries({
+          color: '#e056fd',
+          lineWidth: 1.5,
+          lineStyle: 0,
+          lastValueVisible: false,
+          priceLineVisible: false,
+        });
+        series.setData([
+          { time: trendlineFirstPoint.time, value: trendlineFirstPoint.price },
+          { time: param.time, value: price },
+        ]);
+        drawings.push({
+          type: 'trendline',
+          points: [
+            { time: trendlineFirstPoint.time, price: trendlineFirstPoint.price },
+            { time: param.time, price: price }
+          ],
+          ref: series
+        });
+        trendlineFirstPoint = null;
+        saveDrawings();
+        setDrawMode(null);
+      }
+    }
+  });
+}
+
+function clearDrawings(skipSave) {
+  drawings.forEach(d => {
+    if (d.type === 'hline' && d.ref) {
+      try { candleSeries.removePriceLine(d.ref); } catch(e) {}
+    }
+    if (d.type === 'trendline' && d.ref) {
+      try { mainChart.removeSeries(d.ref); } catch(e) {}
+    }
+  });
+  drawings = [];
+  if (!skipSave) saveDrawings();
+  setDrawMode(null);
+}
+
+function saveDrawings() {
+  const data = drawings.map(d => {
+    if (d.type === 'hline') return { type: 'hline', price: d.price };
+    if (d.type === 'trendline') return { type: 'trendline', points: d.points };
+    return null;
+  }).filter(Boolean);
+  localStorage.setItem('drawings_' + currentSymbol, JSON.stringify(data));
+}
+
+function loadDrawings() {
+  clearDrawings(true); // Clear previous symbol's drawings (without saving)
+  const raw = localStorage.getItem('drawings_' + currentSymbol);
+  if (!raw) return;
+  try {
+    const saved = JSON.parse(raw);
+    saved.forEach(d => {
+      if (d.type === 'hline') {
+        const line = candleSeries.createPriceLine({
+          price: d.price,
+          color: '#ffb347',
+          lineWidth: 1,
+          lineStyle: 2,
+          axisLabelVisible: true,
+          title: d.price.toFixed(2),
+        });
+        drawings.push({ type: 'hline', price: d.price, ref: line });
+      }
+      if (d.type === 'trendline' && d.points && d.points.length === 2) {
+        const series = mainChart.addLineSeries({
+          color: '#e056fd',
+          lineWidth: 1.5,
+          lineStyle: 0,
+          lastValueVisible: false,
+          priceLineVisible: false,
+        });
+        series.setData([
+          { time: d.points[0].time, value: d.points[0].price },
+          { time: d.points[1].time, value: d.points[1].price },
+        ]);
+        drawings.push({ type: 'trendline', points: d.points, ref: series });
+      }
+    });
+  } catch(e) {}
+}
+
 // ---- Params helper ----
 let currentPriceMode = 'default';
 function getSignalParams() {
@@ -1258,6 +1445,7 @@ function initCharts() {
   obvSeries = obvChart.addLineSeries({ color:'#36d7b7', lineWidth:1.5, title:'OBV' });
   obvMaSeries = obvChart.addLineSeries({ color:'#ffb347', lineWidth:1, title:'OBV MA20', lineStyle:2 });
 
+  initDrawingEvents();
   chartsReady = true;
   syncTimeScales();
 }
@@ -1393,10 +1581,13 @@ async function doAnalyze() {
     // 延迟再resize一次，确保display:none->block后尺寸正确
     setTimeout(() => { resizeCharts(); mainChart.timeScale().fitContent(); }, 50);
 
+    loadDrawings();
+
     // Sidebar
     const s = data.signal;
     updateSignalPanel(s);
     if (mtfEnabled) fetchMTF();
+    fetchSector();
 
   } catch(e) { alert('请求失败: '+e.message); } finally { hideSpinner(); startRealtime(); }
 }

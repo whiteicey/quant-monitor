@@ -370,14 +370,14 @@ pyinstaller --onefile --name "A股信号监控" --add-data "src;src" --hidden-im
 - [x] Android APK — Chaquopy内嵌Python，GitHub Actions自动构建
 - [x] 数据缓存 — K线/搜索/股票名称内存缓存，大幅提升切换速度
 - [x] 深色/浅色主题切换 — 一键切换，localStorage持久化
-- [ ] 图表绘图工具 — 手动画趋势线、标注
+- [x] 图表绘图工具 — 水平支撑/阻力线 + 趋势线，per-symbol localStorage持久化
 - [ ] 云端部署 — Docker 一键部署，手机随时随地访问
 
 ### 策略研究
 - [x] 更多技术指标 — KDJ(K/D/J三线+金叉死叉)、OBV(能量潮+20日均线)、VWAP(成交量加权均价)
 - [ ] 机器学习 — 用历史数据训练信号分类模型
 - [x] 多周期共振 — 日线+周线信号同时确认，新增mtf_confirm回测策略
-- [ ] 板块联动 — 分析个股所属板块整体强弱
+- [x] 板块联动 — 所属行业/概念板块 + 今日板块强弱TOP5排名
 
 ## 免责声明
 
