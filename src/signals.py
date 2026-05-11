@@ -51,6 +51,8 @@ def compute_signals(df: pd.DataFrame, params: SignalParams = None) -> pd.DataFra
 
     if len(df) == 0:
         raise ValueError("数据为空，无法计算信号")
+    if len(df) < 5:
+        raise ValueError("数据不足(至少需要5根K线)")
 
     df = df.copy()
     c, h, l, o, v = df["close"], df["high"], df["low"], df["open"], df["volume"]

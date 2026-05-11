@@ -163,7 +163,9 @@ def vwap(high, low, close, volume):
     typical_price = (high + low + close) / 3
     cum_tp_vol = (typical_price * volume).cumsum()
     cum_vol = volume.cumsum()
-    return cum_tp_vol / cum_vol
+    import numpy as np
+    result = cum_tp_vol / cum_vol.replace(0, np.nan)
+    return result
 
 
 # ============================================================

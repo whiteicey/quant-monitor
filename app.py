@@ -142,7 +142,7 @@ def api_realtime():
     last_bar = {
         "candle": {"time": ts, "open": o, "high": h, "low": l, "close": c},
         "volume": {"time": ts, "value": float(last_row["volume"]),
-                   "color": "rgba(239,83,80,0.6)" if c >= o else "rgba(38,166,154,0.6)"},
+                   "color": "rgba(239,83,80,0.7)" if c >= o else "rgba(38,166,154,0.7)"},
         "fast_ema": {"time": ts, "value": _v("fast_ema")},
         "slow_ema": {"time": ts, "value": _v("slow_ema")},
         "bb_upper": {"time": ts, "value": _v("bb_upper")},
@@ -223,7 +223,7 @@ def api_analyze():
         ts = int(sig_df.index[i].timestamp())
         o, h, l, c = float(row["open"]), float(row["high"]), float(row["low"]), float(row["close"])
         candles.append({"time": ts, "open": o, "high": h, "low": l, "close": c})
-        vc = "rgba(239,83,80,0.6)" if c >= o else "rgba(38,166,154,0.6)"
+        vc = "rgba(239,83,80,0.7)" if c >= o else "rgba(38,166,154,0.7)"
         volumes.append({"time": ts, "value": float(row["volume"]), "color": vc})
 
         def _v(col):
@@ -243,7 +243,7 @@ def api_analyze():
                 arr.append({"time": ts, "value": val})
         mh = _v("macd_hist")
         if mh is not None:
-            macd_hist.append({"time": ts, "value": mh, "color": "rgba(239,83,80,0.7)" if mh >= 0 else "rgba(38,166,154,0.7)"})
+            macd_hist.append({"time": ts, "value": mh, "color": "rgba(239,83,80,0.8)" if mh >= 0 else "rgba(38,166,154,0.8)"})
         rv = _v("rsi")
         if rv is not None:
             rsi_arr.append({"time": ts, "value": rv})
@@ -790,6 +790,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
     #chart-macd { height:110px; }
     #chart-rsi { height:100px; }
     .chart-area { padding:4px 6px 6px; }
+    #chart-kdj { height:100px; }
+    #chart-obv { height:100px; }
     #realtime-price { font-size:16px; }
     #realtime-change { font-size:12px; }
     .wl-table .td-price { font-size:14px; }
@@ -807,6 +809,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
     .bt-cell .bt-val { font-size:15px; }
     .params-grid { grid-template-columns:1fr; }
     .wl-header { gap:6px; }
+    #chart-kdj { height:80px; }
+    #chart-obv { height:80px; }
     .wl-add-wrap input { width:150px; }
     .compare-table th, .compare-table td { padding:4px 4px; font-size:11px; }
   }
@@ -1178,16 +1182,17 @@ function initCharts() {
 }
 
 function syncTimeScales() {
-  const sync = (src, targets) => {
+  let _syncing = false;
+  const allCharts = [mainChart, macdChart, rsiChart, kdjChart, obvChart];
+  allCharts.forEach(src => {
+    if (!src) return;
     src.timeScale().subscribeVisibleLogicalRangeChange(range => {
-      if (range) targets.forEach(t => t.timeScale().setVisibleLogicalRange(range));
+      if (_syncing || !range) return;
+      _syncing = true;
+      allCharts.forEach(t => { if (t && t !== src) try { t.timeScale().setVisibleLogicalRange(range); } catch(e){} });
+      _syncing = false;
     });
-  };
-  sync(mainChart, [macdChart, rsiChart, kdjChart, obvChart]);
-  sync(macdChart, [mainChart, rsiChart, kdjChart, obvChart]);
-  sync(rsiChart, [mainChart, macdChart, kdjChart, obvChart]);
-  sync(kdjChart, [mainChart, macdChart, rsiChart, obvChart]);
-  sync(obvChart, [mainChart, macdChart, rsiChart, kdjChart]);
+  });
 }
 
 function resizeCharts() {
@@ -1445,7 +1450,7 @@ async function fetchRealtime() {
     if (lb.signal_line && lb.signal_line.value != null) macdSignalSeries.update(lb.signal_line);
     if (lb.macd_hist && lb.macd_hist.value != null) {
       const mhv = lb.macd_hist.value;
-      macdHistSeries.update({time: lb.macd_hist.time, value: mhv, color: mhv >= 0 ? 'rgba(239,83,80,0.7)' : 'rgba(38,166,154,0.7)'});
+      macdHistSeries.update({time: lb.macd_hist.time, value: mhv, color: mhv >= 0 ? 'rgba(239,83,80,0.8)' : 'rgba(38,166,154,0.8)'});
     }
     if (lb.rsi && lb.rsi.value != null) rsiSeries.update(lb.rsi);
 
@@ -1582,7 +1587,7 @@ function drawEquityCurve(data) {
   areaSeries.setData(data);
 
   // 初始资金基准线
-  const baseline = equityChart.addLineSeries({ color:'rgba(255,255,255,0.5)', lineWidth:1.5, lineStyle:2 });
+  const baseline = equityChart.addLineSeries({ color:TEXT_COLOR, lineWidth:1.5, lineStyle:2 });
   baseline.setData([
     { time: data[0].time, value: data[0].value },
     { time: data[data.length-1].time, value: data[0].value },
@@ -1743,6 +1748,8 @@ function toggleTheme() {
     document.documentElement.setAttribute('data-theme', 'light');
     document.addEventListener('DOMContentLoaded', () => {
       document.getElementById('theme-toggle').textContent = '🌙';
+      const t = getChartTheme();
+      CHART_BG = t.bg; GRID_COLOR = t.grid; TEXT_COLOR = t.text;
     });
   }
 })();
