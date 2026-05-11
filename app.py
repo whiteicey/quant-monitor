@@ -75,6 +75,65 @@ def _sanitize(val):
 
 
 # ---------------------------------------------------------------------------
+# Shared parameter parsing helpers
+# ---------------------------------------------------------------------------
+
+def _parse_signal_params():
+    """Parse SignalParams from request.args (shared by all analysis routes)"""
+    p = SignalParams()
+    for k in ["fast_length", "slow_length", "signal_length", "rsi_length", "bb_length", "volume_length", "atr_length"]:
+        v = request.args.get(k)
+        if v:
+            try: setattr(p, k, int(v))
+            except: pass
+    v = request.args.get("bb_mult")
+    if v:
+        try: p.bb_mult = float(v)
+        except: pass
+    v = request.args.get("price_mode")
+    if v:
+        p.price_mode = v
+    return p
+
+def _parse_stop_config():
+    """Parse StopConfig from request.args"""
+    try:
+        _sl = float(request.args.get("stop_loss_pct", "0"))
+        _tp = float(request.args.get("take_profit_pct", "0"))
+        _ts = float(request.args.get("trailing_stop_pct", "0"))
+        _atrsl = float(request.args.get("atr_stop_mult", "0"))
+        if any(x > 0 for x in [_sl, _tp, _ts, _atrsl]):
+            from src.extensions import StopConfig
+            return StopConfig(stop_loss_pct=_sl, take_profit_pct=_tp,
+                              trailing_stop_pct=_ts, atr_stop_mult=_atrsl)
+    except (ValueError, TypeError):
+        pass
+    return None
+
+def _parse_position_config():
+    """Parse PositionConfig from request.args"""
+    pos_mode = request.args.get("position_mode", "full").strip()
+    try:
+        pos_pct = float(request.args.get("position_pct", "1.0"))
+    except (ValueError, TypeError):
+        pos_pct = 1.0
+    if pos_mode != "full":
+        from src.extensions import PositionConfig
+        return PositionConfig(mode=pos_mode, position_pct=pos_pct)
+    return None
+
+def _parse_capital_params():
+    """Parse capital/commission/stamp_tax from request.args"""
+    try:
+        initial_capital = float(request.args.get("initial_capital", "1000000"))
+        commission = float(request.args.get("commission", "0.001"))
+        stamp_tax = float(request.args.get("stamp_tax", "0.001"))
+    except (ValueError, TypeError):
+        initial_capital, commission, stamp_tax = 1000000.0, 0.001, 0.001
+    return initial_capital, commission, stamp_tax
+
+
+# ---------------------------------------------------------------------------
 # API
 # ---------------------------------------------------------------------------
 
@@ -94,19 +153,7 @@ def api_realtime():
     end = request.args.get("end", "").strip()
     period = request.args.get("period", "daily").strip()
 
-    p = SignalParams()
-    for k in ["fast_length", "slow_length", "signal_length", "rsi_length", "bb_length", "volume_length", "atr_length"]:
-        v = request.args.get(k)
-        if v:
-            try: setattr(p, k, int(v))
-            except: pass
-    v = request.args.get("bb_mult")
-    if v:
-        try: p.bb_mult = float(v)
-        except: pass
-    v = request.args.get("price_mode")
-    if v:
-        p.price_mode = v
+    p = _parse_signal_params()
 
     try:
         quote = fetch_realtime_quote(symbol)
@@ -175,19 +222,7 @@ def api_analyze():
     period = request.args.get("period", "daily").strip()
 
     # 信号参数
-    p = SignalParams()
-    for k in ["fast_length", "slow_length", "signal_length", "rsi_length", "bb_length", "volume_length", "atr_length"]:
-        v = request.args.get(k)
-        if v:
-            try: setattr(p, k, int(v))
-            except: pass
-    v = request.args.get("bb_mult")
-    if v:
-        try: p.bb_mult = float(v)
-        except: pass
-    v = request.args.get("price_mode")
-    if v:
-        p.price_mode = v
+    p = _parse_signal_params()
 
     try:
         name = fetch_stock_info(symbol)
@@ -452,51 +487,10 @@ def api_backtest():
     end = request.args.get("end", "").strip()
     strategy = request.args.get("strategy", "macd_rsi").strip()
 
-    p = SignalParams()
-    for k in ["fast_length", "slow_length", "signal_length", "rsi_length", "bb_length", "volume_length", "atr_length"]:
-        v = request.args.get(k)
-        if v:
-            try: setattr(p, k, int(v))
-            except: pass
-    v = request.args.get("bb_mult")
-    if v:
-        try: p.bb_mult = float(v)
-        except: pass
-    v = request.args.get("price_mode")
-    if v:
-        p.price_mode = v
-
-    try:
-        initial_capital = float(request.args.get("initial_capital", "1000000"))
-        commission = float(request.args.get("commission", "0.001"))
-        stamp_tax = float(request.args.get("stamp_tax", "0.001"))
-    except (ValueError, TypeError):
-        initial_capital, commission, stamp_tax = 1000000.0, 0.001, 0.001
-
-    # 止盈止损参数
-    stop_config = None
-    try:
-        _sl = float(request.args.get("stop_loss_pct", "0"))
-        _tp = float(request.args.get("take_profit_pct", "0"))
-        _ts = float(request.args.get("trailing_stop_pct", "0"))
-        _atrsl = float(request.args.get("atr_stop_mult", "0"))
-        if any(x > 0 for x in [_sl, _tp, _ts, _atrsl]):
-            from src.extensions import StopConfig
-            stop_config = StopConfig(stop_loss_pct=_sl, take_profit_pct=_tp,
-                                     trailing_stop_pct=_ts, atr_stop_mult=_atrsl)
-    except (ValueError, TypeError):
-        pass
-
-    # 仓位管理参数
-    position_config = None
-    pos_mode = request.args.get("position_mode", "full").strip()
-    try:
-        pos_pct = float(request.args.get("position_pct", "1.0"))
-    except (ValueError, TypeError):
-        pos_pct = 1.0
-    if pos_mode != "full":
-        from src.extensions import PositionConfig
-        position_config = PositionConfig(mode=pos_mode, position_pct=pos_pct)
+    p = _parse_signal_params()
+    initial_capital, commission, stamp_tax = _parse_capital_params()
+    stop_config = _parse_stop_config()
+    position_config = _parse_position_config()
 
     try:
         df = fetch_stock_daily(symbol, start, end)
@@ -554,51 +548,10 @@ def api_backtest_compare():
     
     strategy_ids = [s.strip() for s in strategies_str.split(",") if s.strip()] if strategies_str else None
 
-    p = SignalParams()
-    for k in ["fast_length", "slow_length", "signal_length", "rsi_length", "bb_length", "volume_length", "atr_length"]:
-        v = request.args.get(k)
-        if v:
-            try: setattr(p, k, int(v))
-            except: pass
-    v = request.args.get("bb_mult")
-    if v:
-        try: p.bb_mult = float(v)
-        except: pass
-    v = request.args.get("price_mode")
-    if v:
-        p.price_mode = v
-
-    try:
-        initial_capital = float(request.args.get("initial_capital", "1000000"))
-        commission = float(request.args.get("commission", "0.001"))
-        stamp_tax = float(request.args.get("stamp_tax", "0.001"))
-    except (ValueError, TypeError):
-        initial_capital, commission, stamp_tax = 1000000.0, 0.001, 0.001
-
-    # 止盈止损参数
-    stop_config = None
-    try:
-        _sl = float(request.args.get("stop_loss_pct", "0"))
-        _tp = float(request.args.get("take_profit_pct", "0"))
-        _ts = float(request.args.get("trailing_stop_pct", "0"))
-        _atrsl = float(request.args.get("atr_stop_mult", "0"))
-        if any(x > 0 for x in [_sl, _tp, _ts, _atrsl]):
-            from src.extensions import StopConfig
-            stop_config = StopConfig(stop_loss_pct=_sl, take_profit_pct=_tp,
-                                     trailing_stop_pct=_ts, atr_stop_mult=_atrsl)
-    except (ValueError, TypeError):
-        pass
-
-    # 仓位管理参数
-    position_config = None
-    pos_mode = request.args.get("position_mode", "full").strip()
-    try:
-        pos_pct = float(request.args.get("position_pct", "1.0"))
-    except (ValueError, TypeError):
-        pos_pct = 1.0
-    if pos_mode != "full":
-        from src.extensions import PositionConfig
-        position_config = PositionConfig(mode=pos_mode, position_pct=pos_pct)
+    p = _parse_signal_params()
+    initial_capital, commission, stamp_tax = _parse_capital_params()
+    stop_config = _parse_stop_config()
+    position_config = _parse_position_config()
 
     try:
         df = fetch_stock_daily(symbol, start, end)

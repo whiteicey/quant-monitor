@@ -379,6 +379,88 @@ pyinstaller --onefile --name "A股信号监控" --add-data "src;src" --hidden-im
 - [x] 多周期共振 — 日线+周线信号同时确认，新增mtf_confirm回测策略
 - [x] 板块联动 — 所属行业/概念板块 + 今日板块强弱TOP5排名
 
+## 发展蓝图
+
+### 已知问题（量化视角）
+
+当前版本是**零售级信号监控工具**，从专业量化角度存在以下待改进项：
+
+| 问题 | 说明 | 优先级 |
+|------|------|--------|
+| **前视偏差** | 信号bar收盘价成交→应改为下一bar开盘价 | Critical |
+| **T+1规则** | A股当日买入次日才能卖出，回测未实现 | Critical |
+| **印花税** | 应为卖方单边0.05%（2023年减半后） | High |
+| **滑点模型** | 零滑点假设不真实 | High |
+| **过拟合** | 13策略×13预设的"胜率100%"为样本内结果 | Critical |
+| **统计检验** | 无Sharpe置信区间、无t检验、无样本外测试 | High |
+
+### Phase 1: 基础强化（回测可信度）
+
+- [ ] 修复前视偏差：下一bar开盘价成交
+- [ ] 实现A股T+1结算规则
+- [ ] 修正印花税为卖方单边0.05%
+- [ ] 可配置滑点模型（固定bps / 成交量百分比）
+- [ ] 最低佣金（5元起）
+- [ ] 数据质量校验（缺失值、异常价格、零成交量检测）
+- [ ] Walk-forward验证（滚动训练/测试）
+- [ ] 样本外报告（区分in-sample和out-of-sample指标）
+- [ ] 基准对比（买入持有 / 沪深300指数）
+
+### Phase 2: 策略研究平台
+
+- [ ] 因子模型：单因子IC/IR分析、因子分位回测
+- [ ] 统计框架：Sharpe置信区间、收益t检验、多重比较校正
+- [ ] 多资产组合回测：同时持有多只股票
+- [ ] 组合风险：VaR/CVaR、相关性矩阵、均值-方差优化
+- [ ] 参数优化：网格搜索+交叉验证、过拟合检测
+- [ ] 基本面因子：P/E、P/B、ROE数据接入
+
+### Phase 3: 迈向实盘
+
+- [ ] 模拟交易（Paper Trading）
+- [ ] Broker API抽象接口（submit_order/cancel_order/get_positions）
+- [ ] 实时风控仪表盘（最大回撤熔断、每日亏损限额）
+- [ ] TWAP/VWAP执行算法
+- [ ] 交易成本分析（TCA）
+
+### 目标架构
+
+```
+quant-monitor/
+├── app.py                      # Flask路由层（薄）
+├── static/                     # 前端文件（从app.py提取）
+├── src/
+│   ├── indicators/             # 技术指标（纯计算）
+│   ├── signals/                # 信号引擎 + 策略定义
+│   ├── backtest/               # 事件驱动回测引擎
+│   │   ├── engine.py           # 回测主循环
+│   │   ├── execution.py        # 成交模拟（滑点/T+1）
+│   │   └── metrics.py          # 绩效统计
+│   ├── data/                   # 数据获取 + 缓存 + 校验
+│   ├── risk/                   # 仓位管理 + 止损 + 风控
+│   ├── trade/                  # 价位推荐 + 提醒
+│   └── persistence/            # 自选股 + 用户配置
+```
+
+### 量化接口（Protocol）
+
+```python
+class Strategy(Protocol):
+    def generate_signals(self, df: DataFrame) -> tuple[Series, Series]: ...
+
+class ExecutionModel(Protocol):
+    def get_fill_price(self, bar: Series, side: str) -> float: ...
+    def can_execute(self, bar_date, last_trade_date) -> bool: ...
+
+class RiskManager(Protocol):
+    def check_entry(self, capital, price, position) -> bool: ...
+    def check_exit(self, entry_price, current_price, ...) -> tuple: ...
+
+class DataProvider(Protocol):
+    def fetch_ohlcv(self, symbol, start, end, period) -> DataFrame: ...
+    def fetch_realtime(self, symbol) -> dict: ...
+```
+
 ## 免责声明
 
 本工具仅供**个人学习和研究**用途，不构成任何投资建议。股市有风险，投资需谨慎。作者不对使用本工具产生的任何损失负责。

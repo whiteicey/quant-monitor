@@ -103,7 +103,7 @@ def compute_signals(df: pd.DataFrame, params: SignalParams = None) -> pd.DataFra
     df["high_volatility"] = df["atr"] > ind.sma(df["atr"], 20) * 1.2
 
     # --- KDJ ---
-    from .extensions import kdj as _kdj, obv as _obv, vwap as _vwap
+    from .indicators import kdj as _kdj, obv as _obv, vwap as _vwap
     df["kdj_k"], df["kdj_d"], df["kdj_j"] = _kdj(h, l, c)
     df["kdj_overbought"] = df["kdj_j"] > 80
     df["kdj_oversold"] = df["kdj_j"] < 20

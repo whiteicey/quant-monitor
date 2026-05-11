@@ -60,3 +60,36 @@ def crossover(a: pd.Series, b: pd.Series) -> pd.Series:
 def crossunder(a: pd.Series, b: pd.Series) -> pd.Series:
     """a下穿b"""
     return (a < b) & (a.shift(1) >= b.shift(1))
+
+
+def kdj(high, low, close, n=9, m1=3, m2=3):
+    """
+    KDJ指标
+    返回 (k, d, j) Series
+    """
+    rsv = (close - low.rolling(n).min()) / (high.rolling(n).max() - low.rolling(n).min()) * 100
+    rsv = rsv.fillna(50)
+    k = rsv.ewm(alpha=1/m1, adjust=False).mean()
+    d = k.ewm(alpha=1/m2, adjust=False).mean()
+    j = 3 * k - 2 * d
+    return k, d, j
+
+
+def obv(close, volume):
+    """
+    OBV能量潮指标
+    """
+    direction = np.sign(close.diff())
+    direction.iloc[0] = 0
+    return (volume * direction).cumsum()
+
+
+def vwap(high, low, close, volume):
+    """
+    VWAP成交量加权平均价
+    """
+    typical_price = (high + low + close) / 3
+    cum_tp_vol = (typical_price * volume).cumsum()
+    cum_vol = volume.cumsum()
+    result = cum_tp_vol / cum_vol.replace(0, np.nan)
+    return result

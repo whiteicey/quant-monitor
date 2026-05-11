@@ -132,44 +132,8 @@ def calc_position_size(capital: float, effective_price: float, config: PositionC
 # ============================================================
 # 更多技术指标 (Additional Indicators)
 # ============================================================
-def kdj(high, low, close, n=9, m1=3, m2=3):
-    """
-    KDJ指标
-    TODO: 实现并集成到compute_signals
-    返回 (k, d, j) Series
-    """
-    import pandas as pd
-    rsv = (close - low.rolling(n).min()) / (high.rolling(n).max() - low.rolling(n).min()) * 100
-    rsv = rsv.fillna(50)
-    k = rsv.ewm(alpha=1/m1, adjust=False).mean()
-    d = k.ewm(alpha=1/m2, adjust=False).mean()
-    j = 3 * k - 2 * d
-    return k, d, j
-
-
-def obv(close, volume):
-    """
-    OBV能量潮指标
-    TODO: 实现并集成到compute_signals
-    """
-    import numpy as np
-    import pandas as pd
-    direction = np.sign(close.diff())
-    direction.iloc[0] = 0
-    return (volume * direction).cumsum()
-
-
-def vwap(high, low, close, volume):
-    """
-    VWAP成交量加权平均价
-    TODO: 实现并集成到compute_signals（分钟级数据有意义）
-    """
-    typical_price = (high + low + close) / 3
-    cum_tp_vol = (typical_price * volume).cumsum()
-    cum_vol = volume.cumsum()
-    import numpy as np
-    result = cum_tp_vol / cum_vol.replace(0, np.nan)
-    return result
+# Re-export from indicators for backward compatibility
+from .indicators import kdj, obv, vwap
 
 
 # ============================================================

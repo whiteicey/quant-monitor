@@ -309,14 +309,19 @@ def backtest(
     stop_config=None,
     position_config=None,
     weekly_signals_df=None,
+    _precomputed_signals=None,
     # 保持向后兼容
     use_strong_only: bool = False,
 ) -> BacktestResult:
     """
     多策略回测引擎
     strategy: 策略ID，见 STRATEGIES 字典
+    _precomputed_signals: 预计算的信号DataFrame，避免重复计算
     """
-    signals_df = compute_signals(df, params)
+    if _precomputed_signals is not None:
+        signals_df = _precomputed_signals.copy()
+    else:
+        signals_df = compute_signals(df, params)
 
     if weekly_signals_df is not None:
         signals_df = _merge_weekly_signals(signals_df, weekly_signals_df)
@@ -503,7 +508,8 @@ def backtest_compare(
         result = backtest(df, params=params, initial_capital=initial_capital,
                          commission=commission, stamp_tax=stamp_tax, strategy=sid,
                          stop_config=stop_config, position_config=position_config,
-                         weekly_signals_df=weekly_signals_df)
+                         weekly_signals_df=weekly_signals_df,
+                         _precomputed_signals=signals_df)
         results.append({
             "strategy_id": sid,
             "strategy_name": result.strategy_name,
