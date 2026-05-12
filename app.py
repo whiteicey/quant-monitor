@@ -123,14 +123,19 @@ def _parse_position_config():
     return None
 
 def _parse_capital_params():
-    """Parse capital/commission/stamp_tax from request.args"""
+    """Parse capital/commission/stamp_tax/slippage from request.args"""
     try:
         initial_capital = float(request.args.get("initial_capital", "1000000"))
-        commission = float(request.args.get("commission", "0.001"))
-        stamp_tax = float(request.args.get("stamp_tax", "0.001"))
+        commission = float(request.args.get("commission", "0.00025"))
+        stamp_tax = float(request.args.get("stamp_tax", "0.0005"))
     except (ValueError, TypeError):
-        initial_capital, commission, stamp_tax = 1000000.0, 0.001, 0.001
-    return initial_capital, commission, stamp_tax
+        initial_capital, commission, stamp_tax = 1000000.0, 0.00025, 0.0005
+    # Phase 1 新增参数
+    slippage_bps = float(request.args.get("slippage_bps", "0"))
+    min_commission = float(request.args.get("min_commission", "5"))
+    max_drawdown_limit = float(request.args.get("max_drawdown_limit", "0"))
+    oos_split = float(request.args.get("oos_split", "0"))
+    return initial_capital, commission, stamp_tax, slippage_bps, min_commission, max_drawdown_limit, oos_split
 
 
 # ---------------------------------------------------------------------------
@@ -488,7 +493,7 @@ def api_backtest():
     strategy = request.args.get("strategy", "macd_rsi").strip()
 
     p = _parse_signal_params()
-    initial_capital, commission, stamp_tax = _parse_capital_params()
+    initial_capital, commission, stamp_tax, slippage_bps, min_commission, max_drawdown_limit, oos_split = _parse_capital_params()
     stop_config = _parse_stop_config()
     position_config = _parse_position_config()
 
@@ -510,7 +515,11 @@ def api_backtest():
                           commission=commission, stamp_tax=stamp_tax,
                           strategy=strategy, stop_config=stop_config,
                           position_config=position_config,
-                          weekly_signals_df=weekly_signals_df)
+                          weekly_signals_df=weekly_signals_df,
+                          slippage_bps=slippage_bps,
+                          min_commission=min_commission,
+                          max_drawdown_limit=max_drawdown_limit,
+                          oos_split=oos_split)
     except Exception as e:
         return jsonify({"error": f"回测失败: {e}"}), 500
 
@@ -536,6 +545,12 @@ def api_backtest():
         "loss_trades": result.loss_trades, "sharpe_ratio": result.sharpe_ratio,
         "trades": trades_list,
         "equity_curve": result.equity_curve or [],
+        "benchmark_curve": result.benchmark_curve or [],
+        "drawdown_breaker_triggered": result.drawdown_breaker_triggered,
+        "oos_total_return": result.oos_total_return,
+        "oos_sharpe_ratio": result.oos_sharpe_ratio,
+        "oos_max_drawdown": result.oos_max_drawdown,
+        "oos_trades": result.oos_trades,
     })
 
 
@@ -549,7 +564,7 @@ def api_backtest_compare():
     strategy_ids = [s.strip() for s in strategies_str.split(",") if s.strip()] if strategies_str else None
 
     p = _parse_signal_params()
-    initial_capital, commission, stamp_tax = _parse_capital_params()
+    initial_capital, commission, stamp_tax, slippage_bps, min_commission, max_drawdown_limit, oos_split = _parse_capital_params()
     stop_config = _parse_stop_config()
     position_config = _parse_position_config()
 
@@ -571,7 +586,10 @@ def api_backtest_compare():
                                    commission=commission, stamp_tax=stamp_tax,
                                    strategy_ids=strategy_ids, stop_config=stop_config,
                                    position_config=position_config,
-                                   weekly_signals_df=weekly_signals_df)
+                                   weekly_signals_df=weekly_signals_df,
+                                   slippage_bps=slippage_bps,
+                                   min_commission=min_commission,
+                                   max_drawdown_limit=max_drawdown_limit)
     except Exception as e:
         return jsonify({"error": f"策略对比失败: {e}"}), 500
 
@@ -1059,8 +1077,14 @@ HTML_PAGE = r"""<!DOCTYPE html>
         </div>
         <div class="params-grid">
           <div class="param-item"><label>初始资金</label><input type="number" id="bt-capital" value="1000000" step="100000" min="10000"></div>
-          <div class="param-item"><label>手续费率</label><input type="number" id="bt-commission" value="0.001" step="0.0001" min="0"></div>
-          <div class="param-item"><label>印花税率</label><input type="number" id="bt-tax" value="0.001" step="0.0001" min="0"></div>
+          <div class="param-item"><label>佣金费率</label><input type="number" id="bt-commission" value="0.00025" step="0.00001" min="0" title="券商佣金(买卖双边), 默认万2.5"></div>
+          <div class="param-item"><label>印花税率</label><input type="number" id="bt-tax" value="0.0005" step="0.0001" min="0" title="卖方单边, 默认0.05%"></div>
+        </div>
+        <div class="params-grid" style="margin-top:8px;">
+          <div class="param-item"><label>滑点(基点)</label><input type="number" id="bt-slippage" value="0" step="1" min="0" max="100" title="滑点bps, 5=0.05%"></div>
+          <div class="param-item"><label>最低佣金(元)</label><input type="number" id="bt-min-comm" value="5" step="1" min="0" title="每笔交易最低佣金"></div>
+          <div class="param-item"><label>回撤熔断(%)</label><input type="number" id="bt-dd-limit" value="0" step="5" min="0" max="100" title="0=不启用, 20=回撤20%停止"></div>
+          <div class="param-item"><label>样本外(%)</label><input type="number" id="bt-oos" value="0" step="10" min="0" max="50" title="0=不启用, 30=后30%为测试集"></div>
         </div>
         <div class="params-grid" style="margin-top:8px;">
           <div class="param-item"><label>止损(%)</label><input type="number" id="bt-sl" value="0" step="1" min="0" max="50"></div>
@@ -1560,6 +1584,7 @@ async function doBacktest() {
     const url = `/api/backtest?symbol=${currentSymbol}&start=${start}&end=${end}` +
       `&strategy=${g('bt-strategy')}` +
       `&initial_capital=${g('bt-capital')}&commission=${g('bt-commission')}&stamp_tax=${g('bt-tax')}` +
+      `&slippage_bps=${g('bt-slippage')}&min_commission=${g('bt-min-comm')}&max_drawdown_limit=${parseFloat(g('bt-dd-limit'))/100}&oos_split=${parseFloat(g('bt-oos'))/100}` +
       `&stop_loss_pct=${parseFloat(g('bt-sl'))/100}&take_profit_pct=${parseFloat(g('bt-tp'))/100}&trailing_stop_pct=${parseFloat(g('bt-tsl'))/100}&atr_stop_mult=${g('bt-atrsl')}` +
       `&position_mode=${g('bt-pos-mode')}&position_pct=${parseFloat(g('bt-pos-pct'))/100}` +
       getSignalParams();
@@ -1580,6 +1605,11 @@ async function doBacktest() {
       {lbl:'盈/亏', val:data.profit_trades+'/'+data.loss_trades, cls:''},
       {lbl:'Sharpe', val:data.sharpe_ratio, cls:data.sharpe_ratio>=1?'val-green':''},
     ];
+    if (data.drawdown_breaker_triggered) items.push({lbl:'回撤熔断', val:'已触发', cls:'val-red'});
+    if (data.oos_total_return !== null && data.oos_total_return !== undefined) {
+      items.push({lbl:'样本外收益', val:data.oos_total_return+'%', cls:data.oos_total_return>=0?'val-green':'val-red'});
+      items.push({lbl:'样本外Sharpe', val:data.oos_sharpe_ratio, cls:data.oos_sharpe_ratio>=1?'val-green':''});
+    }
     document.getElementById('bt-grid').innerHTML = items.map(i=>`<div class="bt-cell"><div class="bt-val ${i.cls}">${i.val}</div><div class="bt-lbl">${i.lbl}</div></div>`).join('');
 
     const table = document.getElementById('bt-trades');
@@ -1854,6 +1884,7 @@ async function doCompare() {
   try {
     const url = `/api/backtest/compare?symbol=${currentSymbol}&start=${start}&end=${end}&strategies=${selected.join(',')}` +
       `&initial_capital=${g('bt-capital')}&commission=${g('bt-commission')}&stamp_tax=${g('bt-tax')}` +
+      `&slippage_bps=${g('bt-slippage')}&min_commission=${g('bt-min-comm')}&max_drawdown_limit=${parseFloat(g('bt-dd-limit'))/100}` +
       `&stop_loss_pct=${parseFloat(g('bt-sl'))/100}&take_profit_pct=${parseFloat(g('bt-tp'))/100}&trailing_stop_pct=${parseFloat(g('bt-tsl'))/100}&atr_stop_mult=${g('bt-atrsl')}` +
       `&position_mode=${g('bt-pos-mode')}&position_pct=${parseFloat(g('bt-pos-pct'))/100}` +
       getSignalParams();

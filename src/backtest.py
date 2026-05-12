@@ -1,5 +1,6 @@
 """
 回测引擎 - 多策略信号模式
+Phase 1 重构: 修复前视偏差/T+1/印花税/最低佣金/滑点/回撤熔断/基准对比/样本外测试
 """
 import pandas as pd
 import numpy as np
@@ -21,6 +22,46 @@ class BacktestResult:
     trades: pd.DataFrame      # 交易明细
     strategy_name: str = ""   # 策略名称
     equity_curve: list = None  # [{"time": int, "value": float}, ...]
+    benchmark_curve: list = None  # 买入持有基准 [{"time": int, "value": float}, ...]
+    drawdown_breaker_triggered: bool = False  # 是否触发回撤熔断
+    # 样本外测试结果
+    oos_total_return: float = None   # out-of-sample 总收益率 %
+    oos_sharpe_ratio: float = None
+    oos_max_drawdown: float = None
+    oos_trades: int = None
+
+
+# ============================================================
+# 交易成本计算工具
+# ============================================================
+
+def _calc_commission(amount: float, rate: float, min_commission: float = 5.0) -> float:
+    """计算佣金，不低于最低佣金(默认5元)"""
+    return max(amount * rate, min_commission)
+
+
+def _calc_buy_cost(shares: int, price: float, commission_rate: float,
+                   min_commission: float = 5.0) -> float:
+    """买入总成本 = 股数*价格 + 佣金(无印花税)"""
+    amount = shares * price
+    comm = _calc_commission(amount, commission_rate, min_commission)
+    return amount + comm
+
+
+def _calc_sell_revenue(shares: int, price: float, commission_rate: float,
+                       stamp_tax_rate: float = 0.0005,
+                       min_commission: float = 5.0) -> float:
+    """卖出净收入 = 股数*价格 - 佣金 - 印花税(卖方单边)"""
+    amount = shares * price
+    comm = _calc_commission(amount, commission_rate, min_commission)
+    stamp = amount * stamp_tax_rate
+    return amount - comm - stamp
+
+
+def _apply_slippage(price: float, side: str, slippage_bps: float) -> float:
+    """应用滑点: 买入价格上滑, 卖出价格下滑"""
+    slip = price * slippage_bps / 10000
+    return price + slip if side == "buy" else price - slip
 
 
 # ============================================================
@@ -303,20 +344,33 @@ def backtest(
     df: pd.DataFrame,
     params: SignalParams = None,
     initial_capital: float = 1000000.0,
-    commission: float = 0.001,
-    stamp_tax: float = 0.001,
+    commission: float = 0.00025,
+    stamp_tax: float = 0.0005,
     strategy: str = "macd_rsi",
     stop_config=None,
     position_config=None,
     weekly_signals_df=None,
     _precomputed_signals=None,
+    # Phase 1 新增参数
+    slippage_bps: float = 0.0,          # 滑点(基点), 如 5 = 0.05%
+    min_commission: float = 5.0,         # 最低佣金(元)
+    max_drawdown_limit: float = 0.0,     # 最大回撤熔断(0=不启用, 0.20=20%)
+    oos_split: float = 0.0,             # 样本外比例(0=不启用, 0.3=后30%测试)
     # 保持向后兼容
     use_strong_only: bool = False,
 ) -> BacktestResult:
     """
-    多策略回测引擎
-    strategy: 策略ID，见 STRATEGIES 字典
-    _precomputed_signals: 预计算的信号DataFrame，避免重复计算
+    多策略回测引擎 (Phase 1 重构)
+    
+    修复项:
+    1. 前视偏差: 信号在bar[i]产生, 在bar[i+1]的开盘价成交
+    2. T+1: 买入当日不能卖出(卖出日必须>买入日)
+    3. 印花税: 卖方单边0.05%(stamp_tax), 买方不收
+    4. 最低佣金: 每笔不低于min_commission(默认5元)
+    5. 滑点: slippage_bps基点, 买入加价卖出减价
+    6. 回撤熔断: max_drawdown_limit, 触发后停止开新仓
+    7. 基准对比: 返回buy&hold基准曲线
+    8. 样本外测试: oos_split比例切分
     """
     if _precomputed_signals is not None:
         signals_df = _precomputed_signals.copy()
@@ -336,116 +390,45 @@ def backtest(
     strategy_name, strategy_fn, _ = STRATEGIES[strategy]
     buy_mask, sell_mask = strategy_fn(signals_df)
 
-    capital = initial_capital
-    position = 0
-    entry_price = 0.0
-    entry_date = None
-    max_price_since_entry = 0.0
-    trades = []
-    eq_curve = []  # 权益曲线（每根K线一个值）
+    # ---- 样本外测试: 只在训练集上跑, 测试集单独跑 ----
+    oos_result = None
+    if oos_split > 0:
+        split_idx = int(len(signals_df) * (1 - oos_split))
+        if split_idx > 50 and split_idx < len(signals_df) - 10:
+            # 训练集
+            train_signals = signals_df.iloc[:split_idx]
+            train_buy = buy_mask.iloc[:split_idx]
+            train_sell = sell_mask.iloc[:split_idx]
+            # 测试集: 递归调用自身(不再split)
+            test_signals = signals_df.iloc[split_idx:]
+            oos_result = _run_backtest_core(
+                test_signals, strategy_fn, initial_capital,
+                commission, stamp_tax, min_commission, slippage_bps,
+                max_drawdown_limit, stop_config, position_config)
+            # 训练集继续下面的主逻辑
+            signals_df = train_signals
+            buy_mask = train_buy
+            sell_mask = train_sell
 
-    for i in range(len(signals_df)):
-        row = signals_df.iloc[i]
-        price = row["close"]
-        bar_high = row["high"]
-        bar_low = row["low"]
-        atr_val = float(row.get("atr", 0)) if not pd.isna(row.get("atr", 0)) else 0
-        date = signals_df.index[i]
-        is_buy = bool(buy_mask.iloc[i]) if hasattr(buy_mask, 'iloc') else bool(buy_mask[i])
-        is_sell = bool(sell_mask.iloc[i]) if hasattr(sell_mask, 'iloc') else bool(sell_mask[i])
+    # ---- 主回测 ----
+    result = _run_backtest_core(
+        signals_df, strategy_fn, initial_capital,
+        commission, stamp_tax, min_commission, slippage_bps,
+        max_drawdown_limit, stop_config, position_config)
 
-        # 记录当前净值（未实现盈亏也计入）
-        eq_curve.append(capital + position * price)
+    # ---- 基准曲线: 买入持有 ----
+    benchmark_curve = _calc_benchmark_curve(signals_df, initial_capital)
 
-        # 止盈止损检查（优先于信号买卖）
-        stop_type, fill_price = None, None
-        if position > 0 and stop_config:
-            max_price_since_entry = max(max_price_since_entry, bar_high)
-            stop_type, fill_price = apply_stop_rules(
-                price, bar_low, bar_high, entry_price, 
-                max_price_since_entry, atr_val, stop_config)
-        
-        if stop_type and position > 0:
-            # 止盈止损触发，强制卖出（用fill_price而非close）
-            revenue = position * fill_price * (1 - commission - stamp_tax)
-            pnl = revenue - position * entry_price * (1 + commission)
-            capital += revenue
-            trades.append({
-                "buy_date": str(entry_date.date()) if hasattr(entry_date, 'date') else str(entry_date)[:10],
-                "sell_date": date,
-                "entry_price": entry_price,
-                "exit_price": round(fill_price, 2),
-                "shares": position,
-                "pnl": round(pnl, 2),
-                "return_pct": round((fill_price / entry_price - 1) * 100, 2),
-                "exit_type": stop_type,
-            })
-            position = 0
-            max_price_since_entry = 0.0
+    # ---- 组装结果 ----
+    trades = result["trades"]
+    eq_curve = result["eq_curve"]
+    breaker_triggered = result["breaker_triggered"]
 
-        elif is_buy and position == 0:
-            # Kelly模式：用历史胜率计算
-            hist_wr, hist_ratio = 0.5, 1.0
-            if position_config and position_config.mode == "kelly" and len(trades) >= 10:
-                wins = sum(1 for t in trades if t["pnl"] > 0)
-                losses = len(trades) - wins
-                hist_wr = wins / len(trades) if trades else 0.5
-                avg_win = sum(t["return_pct"] for t in trades if t["pnl"] > 0) / max(wins, 1)
-                avg_loss = abs(sum(t["return_pct"] for t in trades if t["pnl"] <= 0) / max(losses, 1))
-                hist_ratio = avg_win / avg_loss if avg_loss > 0 else 1.0
-            shares = calc_position_size(capital, price * (1 + commission), position_config,
-                                         win_rate=hist_wr, avg_win_loss_ratio=hist_ratio)
-            if shares > 0:
-                cost = shares * price * (1 + commission)
-                capital -= cost
-                position = shares
-                entry_price = price
-                entry_date = date
-                max_price_since_entry = bar_high
-
-        elif is_sell and position > 0:
-            revenue = position * price * (1 - commission - stamp_tax)
-            pnl = revenue - position * entry_price * (1 + commission)
-            capital += revenue
-            trades.append({
-                "buy_date": str(entry_date.date()) if hasattr(entry_date, 'date') else str(entry_date)[:10],
-                "sell_date": date,
-                "entry_price": entry_price,
-                "exit_price": price,
-                "shares": position,
-                "pnl": round(pnl, 2),
-                "return_pct": round((price / entry_price - 1) * 100, 2),
-                "exit_type": "signal",
-            })
-            position = 0
-            max_price_since_entry = 0.0
-
-    # 未平仓持仓：按当前市价记录，不扣卖出手续费（因为还没卖）
-    final_price = signals_df.iloc[-1]["close"]
-    final_date = signals_df.index[-1]
-    if position > 0:
-        market_value = position * final_price  # 当前市值，不扣手续费
-        cost = position * entry_price * (1 + commission)  # 买入成本（含买入手续费）
-        pnl = market_value - cost
-        trades.append({
-            "buy_date": str(entry_date.date()) if hasattr(entry_date, 'date') else str(entry_date)[:10],
-            "sell_date": str(final_date.date()) + "(未平仓)" if hasattr(final_date, 'date') else str(final_date)[:10] + "(未平仓)",
-            "entry_price": entry_price,
-            "exit_price": final_price,
-            "shares": position,
-            "pnl": round(pnl, 2),
-            "return_pct": round((final_price / entry_price - 1) * 100, 2),
-            "exit_type": "holding",
-        })
-        capital += market_value  # 按市值计入，不扣卖出费用
-        position = 0
-
-    final_value = capital
+    final_value = eq_curve[-1] if eq_curve else initial_capital
     total_return = (final_value / initial_capital - 1) * 100
     days = (signals_df.index[-1] - signals_df.index[0]).days
     annual_return = ((final_value / initial_capital) ** (365.0 / max(days, 1)) - 1) * 100 if days > 0 else 0
 
-    # 最大回撤 & Sharpe（直接用 eq_curve）
     eq_series = pd.Series(eq_curve)
     peak = eq_series.cummax()
     drawdown = ((eq_series - peak) / peak * 100).min()
@@ -458,7 +441,7 @@ def backtest(
     loss_trades = len([t for t in trades if t["pnl"] <= 0])
     win_rate = (profit_trades / len(trades) * 100) if trades else 0
 
-    # 构造权益曲线数据
+    # 权益曲线数据
     equity_data = []
     for i in range(len(signals_df)):
         ts = int(signals_df.index[i].timestamp())
@@ -476,19 +459,234 @@ def backtest(
         trades=trades_df,
         strategy_name=strategy_name,
         equity_curve=equity_data,
+        benchmark_curve=benchmark_curve,
+        drawdown_breaker_triggered=breaker_triggered,
+        oos_total_return=round(oos_result["total_return"], 2) if oos_result else None,
+        oos_sharpe_ratio=round(oos_result["sharpe"], 2) if oos_result else None,
+        oos_max_drawdown=round(oos_result["max_dd"], 2) if oos_result else None,
+        oos_trades=oos_result["num_trades"] if oos_result else None,
     )
+
+
+def _calc_benchmark_curve(signals_df: pd.DataFrame, initial_capital: float) -> list:
+    """买入持有基准曲线: 第一天全仓买入, 持有到最后"""
+    first_price = signals_df.iloc[0]["close"]
+    benchmark = []
+    for i in range(len(signals_df)):
+        ts = int(signals_df.index[i].timestamp())
+        val = initial_capital * signals_df.iloc[i]["close"] / first_price
+        benchmark.append({"time": ts, "value": round(val, 2)})
+    return benchmark
+
+
+def _run_backtest_core(
+    signals_df, strategy_fn, initial_capital,
+    commission, stamp_tax, min_commission, slippage_bps,
+    max_drawdown_limit, stop_config, position_config,
+) -> dict:
+    """
+    核心回测循环 (修复前视偏差 + T+1 + 真实成本模型)
+    
+    关键逻辑:
+    - 信号在 bar[i] 产生, 成交在 bar[i+1] 的开盘价(+滑点)
+    - T+1: 卖出日必须严格晚于买入日 (entry_bar_idx < current bar)
+    - 印花税只在卖出时收取
+    - 佣金不低于min_commission
+    """
+    buy_mask, sell_mask = strategy_fn(signals_df)
+
+    capital = initial_capital
+    position = 0
+    entry_price = 0.0
+    entry_date = None
+    entry_bar_idx = -1  # 买入时的bar索引, 用于T+1判断
+    max_price_since_entry = 0.0
+    trades = []
+    eq_curve = []
+    breaker_triggered = False
+    breaker_active = False  # 回撤熔断激活后不再开新仓
+    peak_equity = initial_capital  # 增量维护峰值
+
+    # 待执行队列: 信号在bar[i], 执行在bar[i+1] (止损不走此队列, 盘中即时成交)
+    pending_action = None  # ("buy", i) or ("sell", i, exit_type)
+
+    n = len(signals_df)
+    for i in range(n):
+        row = signals_df.iloc[i]
+        price = row["close"]
+        bar_open = row["open"]
+        bar_high = row["high"]
+        bar_low = row["low"]
+        atr_val = float(row.get("atr", 0)) if not pd.isna(row.get("atr", 0)) else 0
+        date = signals_df.index[i]
+
+        # ========== 第1步: 执行上一bar的待执行订单 ==========
+        if pending_action is not None:
+            action_type = pending_action[0]
+
+            if action_type == "buy" and position == 0 and not breaker_active:
+                fill_price = _apply_slippage(bar_open, "buy", slippage_bps)
+                # Kelly模式
+                hist_wr, hist_ratio = 0.5, 1.0
+                if position_config and position_config.mode == "kelly" and len(trades) >= 10:
+                    wins = sum(1 for t in trades if t["pnl"] > 0)
+                    losses = len(trades) - wins
+                    hist_wr = wins / len(trades) if trades else 0.5
+                    avg_win = sum(t["return_pct"] for t in trades if t["pnl"] > 0) / max(wins, 1)
+                    avg_loss = abs(sum(t["return_pct"] for t in trades if t["pnl"] <= 0) / max(losses, 1))
+                    hist_ratio = avg_win / avg_loss if avg_loss > 0 else 1.0
+
+                # calc_position_size 需要含佣金的等效价格
+                eff_price = fill_price * (1 + commission)  # 近似含佣金价格
+                shares = calc_position_size(capital, eff_price, position_config,
+                                            win_rate=hist_wr, avg_win_loss_ratio=hist_ratio)
+                if shares > 0:
+                    cost = _calc_buy_cost(shares, fill_price, commission, min_commission)
+                    if cost <= capital:
+                        capital -= cost
+                        position = shares
+                        entry_price = fill_price
+                        entry_date = date
+                        entry_bar_idx = i
+                        max_price_since_entry = bar_high
+
+            elif action_type == "sell" and position > 0:
+                fill_price = _apply_slippage(bar_open, "sell", slippage_bps)
+                revenue = _calc_sell_revenue(position, fill_price, commission, stamp_tax, min_commission)
+                # PnL = 价差收益 - 买入佣金 - 卖出佣金 - 卖出印花税
+                gross_pnl = (fill_price - entry_price) * position
+                buy_comm = _calc_commission(position * entry_price, commission, min_commission)
+                sell_comm = _calc_commission(position * fill_price, commission, min_commission)
+                sell_stamp = position * fill_price * stamp_tax
+                pnl = gross_pnl - buy_comm - sell_comm - sell_stamp
+
+                capital += revenue
+                exit_type = pending_action[2] if len(pending_action) > 2 else "signal"
+                trades.append({
+                    "buy_date": str(entry_date.date()) if hasattr(entry_date, 'date') else str(entry_date)[:10],
+                    "sell_date": str(date.date()) if hasattr(date, 'date') else str(date)[:10],
+                    "entry_price": round(entry_price, 2),
+                    "exit_price": round(fill_price, 2),
+                    "shares": position,
+                    "pnl": round(pnl, 2),
+                    "return_pct": round((fill_price / entry_price - 1) * 100, 2),
+                    "exit_type": exit_type,
+                })
+                position = 0
+                max_price_since_entry = 0.0
+
+            pending_action = None
+
+        # ========== 第2步: 记录当前净值 ==========
+        eq_curve.append(capital + position * price)
+
+        # ========== 第3步: 回撤熔断检查 ==========
+        if max_drawdown_limit > 0 and not breaker_active:
+            current_value = eq_curve[-1]
+            peak_equity = max(peak_equity, current_value)
+            current_dd = (peak_equity - current_value) / peak_equity
+            if current_dd >= max_drawdown_limit:
+                breaker_active = True
+                breaker_triggered = True
+
+        # ========== 第4步: 产生新信号(下一bar执行) ==========
+        is_buy = bool(buy_mask.iloc[i]) if hasattr(buy_mask, 'iloc') else bool(buy_mask[i])
+        is_sell = bool(sell_mask.iloc[i]) if hasattr(sell_mask, 'iloc') else bool(sell_mask[i])
+
+        # 止盈止损检查(盘中即时触发, 当日当价成交, 不走next-bar)
+        if position > 0 and stop_config:
+            max_price_since_entry = max(max_price_since_entry, bar_high)
+            stop_type, stop_fill_price = apply_stop_rules(
+                price, bar_low, bar_high, entry_price,
+                max_price_since_entry, atr_val, stop_config)
+            if stop_type:
+                # T+1: 卖出执行日(今天i) > 买入执行日(entry_bar_idx)
+                if i > entry_bar_idx:
+                    fill_price = _apply_slippage(stop_fill_price, "sell", slippage_bps)
+                    revenue = _calc_sell_revenue(position, fill_price, commission, stamp_tax, min_commission)
+                    gross_pnl = (fill_price - entry_price) * position
+                    buy_comm = _calc_commission(position * entry_price, commission, min_commission)
+                    sell_comm = _calc_commission(position * fill_price, commission, min_commission)
+                    sell_stamp = position * fill_price * stamp_tax
+                    pnl = gross_pnl - buy_comm - sell_comm - sell_stamp
+
+                    capital += revenue
+                    trades.append({
+                        "buy_date": str(entry_date.date()) if hasattr(entry_date, 'date') else str(entry_date)[:10],
+                        "sell_date": str(date.date()) if hasattr(date, 'date') else str(date)[:10],
+                        "entry_price": round(entry_price, 2),
+                        "exit_price": round(fill_price, 2),
+                        "shares": position,
+                        "pnl": round(pnl, 2),
+                        "return_pct": round((fill_price / entry_price - 1) * 100, 2),
+                        "exit_type": stop_type,
+                    })
+                    position = 0
+                    max_price_since_entry = 0.0
+                continue  # 止损优先, 不看其他信号
+
+        if is_buy and position == 0 and not breaker_active:
+            pending_action = ("buy", i)
+        elif is_sell and position > 0:
+            # T+1: 买入执行在entry_bar_idx, 卖出执行在i+1
+            # 要求 i+1 > entry_bar_idx → i >= entry_bar_idx
+            if i >= entry_bar_idx:
+                pending_action = ("sell", i, "signal")
+
+    # ---- 未平仓持仓 ----
+    if position > 0:
+        final_price = signals_df.iloc[-1]["close"]
+        final_date = signals_df.index[-1]
+        market_value = position * final_price
+        gross_pnl = (final_price - entry_price) * position
+        buy_comm = _calc_commission(position * entry_price, commission, min_commission)
+        pnl = gross_pnl - buy_comm  # 未卖出不扣卖出费用
+
+        trades.append({
+            "buy_date": str(entry_date.date()) if hasattr(entry_date, 'date') else str(entry_date)[:10],
+            "sell_date": str(final_date.date()) + "(未平仓)" if hasattr(final_date, 'date') else str(final_date)[:10] + "(未平仓)",
+            "entry_price": round(entry_price, 2),
+            "exit_price": round(final_price, 2),
+            "shares": position,
+            "pnl": round(pnl, 2),
+            "return_pct": round((final_price / entry_price - 1) * 100, 2),
+            "exit_type": "holding",
+        })
+        # eq_curve最后一个值已经包含了position * close
+
+    # 返回核心数据
+    final_value = eq_curve[-1] if eq_curve else initial_capital
+    total_ret = (final_value / initial_capital - 1) * 100
+    eq_s = pd.Series(eq_curve)
+    peak = eq_s.cummax()
+    max_dd = ((eq_s - peak) / peak * 100).min()
+    daily_ret = eq_s.pct_change().dropna()
+    sharpe_val = (daily_ret.mean() / daily_ret.std() * np.sqrt(252)) if daily_ret.std() > 0 else 0
+
+    return {
+        "trades": trades,
+        "eq_curve": eq_curve,
+        "breaker_triggered": breaker_triggered,
+        "total_return": total_ret,
+        "sharpe": sharpe_val,
+        "max_dd": max_dd,
+        "num_trades": len(trades),
+    }
 
 
 def backtest_compare(
     df: pd.DataFrame,
     params: SignalParams = None,
     initial_capital: float = 1000000.0,
-    commission: float = 0.001,
-    stamp_tax: float = 0.001,
+    commission: float = 0.00025,
+    stamp_tax: float = 0.0005,
     strategy_ids: list = None,
     stop_config=None,
     position_config=None,
     weekly_signals_df=None,
+    slippage_bps: float = 0.0,
+    min_commission: float = 5.0,
+    max_drawdown_limit: float = 0.0,
 ) -> list:
     """
     对指定策略跑回测并返回对比数据
@@ -504,12 +702,14 @@ def backtest_compare(
     for sid in strategy_ids:
         if sid not in STRATEGIES:
             continue
-        # Call backtest which will reuse cached data
         result = backtest(df, params=params, initial_capital=initial_capital,
                          commission=commission, stamp_tax=stamp_tax, strategy=sid,
                          stop_config=stop_config, position_config=position_config,
                          weekly_signals_df=weekly_signals_df,
-                         _precomputed_signals=signals_df)
+                         _precomputed_signals=signals_df,
+                         slippage_bps=slippage_bps,
+                         min_commission=min_commission,
+                         max_drawdown_limit=max_drawdown_limit)
         results.append({
             "strategy_id": sid,
             "strategy_name": result.strategy_name,
@@ -520,6 +720,7 @@ def backtest_compare(
             "total_trades": result.total_trades,
             "sharpe_ratio": result.sharpe_ratio,
             "equity_curve": result.equity_curve,
+            "benchmark_curve": result.benchmark_curve,
         })
 
     results.sort(key=lambda x: x["total_return"], reverse=True)
