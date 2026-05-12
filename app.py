@@ -631,6 +631,94 @@ def api_backtest_walkforward():
 
 
 # ---------------------------------------------------------------------------
+# Portfolio (资产配置) API
+# ---------------------------------------------------------------------------
+
+@app.route("/api/portfolio/presets")
+def api_portfolio_presets():
+    from src.presets import get_preset_list
+    return jsonify(get_preset_list())
+
+
+@app.route("/api/portfolio/assets")
+def api_portfolio_assets():
+    from src.presets import get_asset_library
+    return jsonify(get_asset_library())
+
+
+@app.route("/api/portfolio/strategies")
+def api_portfolio_strategies():
+    from src.allocation import get_strategy_list
+    return jsonify(get_strategy_list())
+
+
+@app.route("/api/portfolio/recommend")
+def api_portfolio_recommend():
+    symbols_str = request.args.get("symbols", "").strip()
+    if not symbols_str:
+        return jsonify({"error": "缺少资产代码"}), 400
+    symbols = [s.strip() for s in symbols_str.split(",") if s.strip()]
+    from src.presets import recommend_strategy
+    return jsonify(recommend_strategy(symbols))
+
+
+@app.route("/api/portfolio/backtest")
+def api_portfolio_backtest():
+    symbols_str = request.args.get("symbols", "").strip()
+    if not symbols_str:
+        return jsonify({"error": "缺少资产代码"}), 400
+    symbols = [s.strip() for s in symbols_str.split(",") if s.strip()]
+    if len(symbols) < 2:
+        return jsonify({"error": "至少需要2个资产"}), 400
+
+    start = request.args.get("start", "20200101").strip()
+    end = request.args.get("end", "").strip()
+    strategy = request.args.get("strategy", "equal_weight").strip()
+    rebalance = request.args.get("rebalance", "monthly").strip()
+
+    try:
+        initial_capital = float(request.args.get("initial_capital", "1000000"))
+        commission = float(request.args.get("commission", "0.00025"))
+        stamp_tax = float(request.args.get("stamp_tax", "0.0005"))
+        slippage_bps = float(request.args.get("slippage_bps", "0"))
+        min_commission = float(request.args.get("min_commission", "5"))
+        momentum_lookback = int(request.args.get("momentum_lookback", "20"))
+        ma_period = int(request.args.get("ma_period", "60"))
+    except (ValueError, TypeError):
+        initial_capital = 1000000.0
+        commission, stamp_tax, slippage_bps, min_commission = 0.00025, 0.0005, 0.0, 5.0
+        momentum_lookback, ma_period = 20, 60
+
+    try:
+        from src.portfolio import portfolio_backtest
+        result = portfolio_backtest(
+            symbols=symbols, start=start, end=end,
+            strategy=strategy, rebalance_freq=rebalance,
+            initial_capital=initial_capital, commission=commission,
+            stamp_tax=stamp_tax, slippage_bps=slippage_bps,
+            min_commission=min_commission,
+            momentum_lookback=momentum_lookback, ma_period=ma_period)
+    except Exception as e:
+        return jsonify({"error": f"组合回测失败: {e}"}), 500
+
+    return jsonify({
+        "strategy_name": result.strategy_name,
+        "total_return": result.total_return,
+        "annual_return": result.annual_return,
+        "max_drawdown": result.max_drawdown,
+        "sharpe_ratio": result.sharpe_ratio,
+        "calmar_ratio": result.calmar_ratio,
+        "volatility": result.volatility,
+        "total_rebalances": result.total_rebalances,
+        "turnover": result.turnover,
+        "equity_curve": result.equity_curve,
+        "benchmark_curve": result.benchmark_curve,
+        "weight_history": result.weight_history,
+        "symbols": result.symbols,
+    })
+
+
+# ---------------------------------------------------------------------------
 # HTML
 # ---------------------------------------------------------------------------
 
@@ -919,6 +1007,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <div class="view-tabs">
     <button class="view-tab active" data-view="watchlist" onclick="switchView('watchlist')">自选股</button>
     <button class="view-tab" data-view="detail" onclick="switchView('detail')">个股详情</button>
+    <button class="view-tab" data-view="portfolio" onclick="switchView('portfolio')">资产配置</button>
   </div>
 
   <div class="search-wrap">
@@ -1140,6 +1229,88 @@ HTML_PAGE = r"""<!DOCTYPE html>
       </div>
     </div>
   </div>
+    </div>
+  </div>
+</div>
+
+<!-- 资产配置视图 -->
+<div id="view-portfolio" style="display:none;padding:16px;width:100%;overflow-y:auto;">
+  <h2 style="margin:0 0 12px;font-size:18px;">资产配置</h2>
+
+  <div style="display:flex;gap:16px;flex-wrap:wrap;">
+    <!-- 左侧: 配置面板 -->
+    <div style="flex:1;min-width:320px;max-width:500px;">
+      <!-- 预设选择 -->
+      <div class="card">
+        <div class="card-title"><span class="icon">&#x1F4E6;</span> 预设方案</div>
+        <select id="pf-preset" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:13px;"></select>
+        <div id="pf-preset-desc" style="font-size:11px;color:var(--text-dim);margin-top:6px;min-height:20px;"></div>
+        <button class="btn" style="margin-top:8px;font-size:12px;padding:4px 12px;" onclick="pfCopyPreset()">复制并修改</button>
+      </div>
+
+      <!-- 自定义资产 -->
+      <div class="card">
+        <div class="card-title"><span class="icon">&#x1F4DD;</span> 资产池 <span id="pf-asset-count" style="font-size:11px;color:var(--text-dim);"></span></div>
+        <div id="pf-asset-list" style="max-height:200px;overflow-y:auto;"></div>
+        <div style="margin-top:8px;display:flex;gap:6px;">
+          <input type="text" id="pf-add-input" placeholder="输入代码添加..." style="flex:1;padding:6px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:12px;">
+          <button class="btn" style="font-size:12px;padding:4px 12px;" onclick="pfAddAsset()">添加</button>
+        </div>
+      </div>
+
+      <!-- 策略选择 -->
+      <div class="card">
+        <div class="card-title"><span class="icon">&#x2699;</span> 策略设置</div>
+        <div class="param-item" style="margin-bottom:6px;">
+          <label>配置策略</label>
+          <select id="pf-strategy" style="width:100%;padding:6px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:13px;"></select>
+        </div>
+        <div class="param-item" style="margin-bottom:6px;">
+          <label>再平衡频率</label>
+          <select id="pf-rebalance" style="width:100%;padding:6px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:13px;">
+            <option value="weekly">每周</option>
+            <option value="biweekly">每两周</option>
+            <option value="monthly" selected>每月</option>
+            <option value="quarterly">每季度</option>
+          </select>
+        </div>
+        <div class="params-grid" style="margin-top:6px;">
+          <div class="param-item"><label>初始资金</label><input type="number" id="pf-capital" value="1000000" step="100000" min="10000"></div>
+          <div class="param-item"><label>动量回看(天)</label><input type="number" id="pf-mom-lb" value="20" min="5" max="120"></div>
+          <div class="param-item"><label>均线周期(天)</label><input type="number" id="pf-ma-period" value="60" min="10" max="250"></div>
+        </div>
+      </div>
+
+      <!-- 智能建议 -->
+      <div class="card" id="pf-recommend-card">
+        <div class="card-title"><span class="icon">&#x1F4A1;</span> 智能建议</div>
+        <div id="pf-recommend-content" style="font-size:12px;line-height:1.6;">选择资产后自动生成建议</div>
+      </div>
+
+      <div style="display:flex;gap:8px;margin-top:8px;">
+        <button class="btn btn-warn" onclick="pfRunBacktest()" style="flex:1;">运行组合回测</button>
+      </div>
+    </div>
+
+    <!-- 右侧: 结果区 -->
+    <div style="flex:2;min-width:400px;" id="pf-result-area">
+      <!-- 统计指标 -->
+      <div class="card" id="pf-stats-card" style="display:none;">
+        <div class="card-title"><span class="icon">&#x1F4CA;</span> 组合回测结果 — <span id="pf-strategy-label"></span></div>
+        <div id="pf-stats-grid" class="bt-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;"></div>
+      </div>
+      <!-- 权益曲线 -->
+      <div class="card" id="pf-equity-card" style="display:none;">
+        <div class="card-title">权益曲线</div>
+        <div id="pf-chart-equity" style="width:100%;height:280px;"></div>
+      </div>
+      <!-- 持仓变化 -->
+      <div class="card" id="pf-weights-card" style="display:none;">
+        <div class="card-title">持仓权重变化</div>
+        <div id="pf-weight-table-wrap" style="max-height:300px;overflow-y:auto;">
+          <table id="pf-weight-table" class="bt-table" style="width:100%;font-size:12px;"></table>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -2278,20 +2449,27 @@ function switchView(view) {
   
   const wlView = document.getElementById('view-watchlist');
   const dtView = document.getElementById('view-detail');
+  const pfView = document.getElementById('view-portfolio');
   
+  wlView.style.display = 'none';
+  dtView.style.display = 'none';
+  pfView.style.display = 'none';
+
   if (view === 'watchlist') {
     wlView.style.display = 'block';
-    dtView.style.display = 'none';
     stopRealtime();
     startWatchlistRefresh();
     refreshWatchlist();
-  } else {
-    wlView.style.display = 'none';
+  } else if (view === 'detail') {
     dtView.style.display = 'flex';
     stopWatchlistRefresh();
-    // 延迟一帧让DOM渲染完再resize图表
     requestAnimationFrame(() => { resizeCharts(); });
     if (chartsReady) startRealtime();
+  } else if (view === 'portfolio') {
+    pfView.style.display = 'block';
+    stopRealtime();
+    stopWatchlistRefresh();
+    if (!pfInitialized) pfInit();
   }
 }
 
@@ -2426,6 +2604,204 @@ document.addEventListener('visibilitychange', () => {
     else if (chartsReady) startRealtime();
   }
 });
+
+// ============================================================
+// Portfolio (资产配置) JS
+// ============================================================
+let pfInitialized = false;
+let pfPresets = [];
+let pfStrategies = [];
+let pfAssetLib = [];
+let pfSelectedSymbols = [];
+let pfEquityChart = null;
+
+async function pfInit() {
+  pfInitialized = true;
+  try {
+    const [presetsResp, stratResp, assetsResp] = await Promise.all([
+      fetch('/api/portfolio/presets'), fetch('/api/portfolio/strategies'), fetch('/api/portfolio/assets')
+    ]);
+    pfPresets = await presetsResp.json();
+    pfStrategies = await stratResp.json();
+    pfAssetLib = await assetsResp.json();
+
+    // 填充预设下拉
+    const sel = document.getElementById('pf-preset');
+    sel.innerHTML = '<option value="">-- 选择预设方案 --</option>' +
+      pfPresets.map(p => '<option value="' + p.id + '">' + p.name + ' (' + p.symbols.length + '个资产)</option>').join('');
+    sel.addEventListener('change', pfOnPresetChange);
+
+    // 填充策略下拉
+    const ssel = document.getElementById('pf-strategy');
+    ssel.innerHTML = pfStrategies.map(s => '<option value="' + s.id + '">' + s.name + ' — ' + s.desc + '</option>').join('');
+
+    // 默认选第一个预设
+    if (pfPresets.length > 0) {
+      sel.value = pfPresets[0].id;
+      pfOnPresetChange();
+    }
+  } catch(e) { console.error('pfInit failed:', e); }
+}
+
+function pfOnPresetChange() {
+  const id = document.getElementById('pf-preset').value;
+  const preset = pfPresets.find(p => p.id === id);
+  if (!preset) return;
+  document.getElementById('pf-preset-desc').textContent = preset.description;
+  pfSelectedSymbols = [...preset.symbols];
+  document.getElementById('pf-strategy').value = preset.default_strategy;
+  document.getElementById('pf-rebalance').value = preset.default_rebalance;
+  pfRenderAssetList();
+  pfLoadRecommend();
+}
+
+function pfCopyPreset() {
+  document.getElementById('pf-preset').value = '';
+  document.getElementById('pf-preset-desc').textContent = '自定义方案 — 基于预设复制，可自由增删资产';
+}
+
+function pfRenderAssetList() {
+  const wrap = document.getElementById('pf-asset-list');
+  const catNames = {equity:'股票/ETF', overseas:'跨境', bond:'债券', gold:'贵金属', commodity:'商品', cash:'现金'};
+  let html = '';
+  pfSelectedSymbols.forEach(sym => {
+    const a = pfAssetLib.find(x => x.symbol === sym);
+    const name = a ? a.name : sym;
+    const cat = a ? (catNames[a.category] || a.category) : '';
+    html += '<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border);">' +
+      '<span style="font-size:12px;"><b>' + sym + '</b> ' + name + ' <span style="color:var(--text-dim);font-size:11px;">' + cat + '</span></span>' +
+      '<button style="background:none;border:none;color:var(--red);cursor:pointer;font-size:14px;" onclick="pfRemoveAsset(\'' + sym + '\')">✕</button></div>';
+  });
+  wrap.innerHTML = html || '<div style="color:var(--text-dim);font-size:12px;padding:8px;">暂无资产，请添加</div>';
+  document.getElementById('pf-asset-count').textContent = '(' + pfSelectedSymbols.length + '个)';
+}
+
+function pfAddAsset() {
+  const inp = document.getElementById('pf-add-input');
+  const sym = inp.value.trim();
+  if (!sym) return;
+  if (pfSelectedSymbols.includes(sym)) { inp.value = ''; return; }
+  pfSelectedSymbols.push(sym);
+  inp.value = '';
+  pfRenderAssetList();
+  pfLoadRecommend();
+}
+
+function pfRemoveAsset(sym) {
+  pfSelectedSymbols = pfSelectedSymbols.filter(s => s !== sym);
+  pfRenderAssetList();
+  pfLoadRecommend();
+}
+
+async function pfLoadRecommend() {
+  if (pfSelectedSymbols.length < 2) {
+    document.getElementById('pf-recommend-content').innerHTML = '<span style="color:var(--text-dim);">至少需要2个资产才能生成建议</span>';
+    return;
+  }
+  try {
+    const resp = await fetch('/api/portfolio/recommend?symbols=' + pfSelectedSymbols.join(','));
+    const r = await resp.json();
+    const stratName = (pfStrategies.find(s=>s.id===r.strategy)||{name:r.strategy}).name;
+    const freqNames = {weekly:'每周',biweekly:'每两周',monthly:'每月',quarterly:'每季度'};
+    document.getElementById('pf-recommend-content').innerHTML =
+      '<div style="margin-bottom:6px;"><b>推荐策略:</b> ' + stratName + '</div>' +
+      '<div style="color:var(--text-dim);margin-bottom:8px;">' + r.strategy_reason + '</div>' +
+      '<div style="margin-bottom:6px;"><b>推荐频率:</b> ' + (freqNames[r.rebalance]||r.rebalance) + '</div>' +
+      '<div style="color:var(--text-dim);">' + r.rebalance_reason + '</div>' +
+      '<button class="btn" style="margin-top:8px;font-size:11px;padding:3px 10px;" onclick="pfApplyRecommend(\'' + r.strategy + '\',\'' + r.rebalance + '\')">应用建议</button>';
+  } catch(e) {}
+}
+
+function pfApplyRecommend(strategy, rebalance) {
+  document.getElementById('pf-strategy').value = strategy;
+  document.getElementById('pf-rebalance').value = rebalance;
+}
+
+async function pfRunBacktest() {
+  if (pfSelectedSymbols.length < 2) { alert('至少需要2个资产'); return; }
+  showSpinner();
+  const start = document.getElementById('inp-start').value.replace(/-/g, '');
+  const end = document.getElementById('inp-end').value.replace(/-/g, '');
+  const url = '/api/portfolio/backtest?symbols=' + pfSelectedSymbols.join(',') +
+    '&start=' + start + '&end=' + end +
+    '&strategy=' + document.getElementById('pf-strategy').value +
+    '&rebalance=' + document.getElementById('pf-rebalance').value +
+    '&initial_capital=' + document.getElementById('pf-capital').value +
+    '&momentum_lookback=' + document.getElementById('pf-mom-lb').value +
+    '&ma_period=' + document.getElementById('pf-ma-period').value;
+  try {
+    const resp = await fetch(url);
+    const data = await resp.json();
+    if (data.error) { alert(data.error); hideSpinner(); return; }
+    pfShowResults(data);
+  } catch(e) { alert('组合回测失败: ' + e.message); }
+  finally { hideSpinner(); }
+}
+
+function pfShowResults(data) {
+  const card = document.getElementById('pf-stats-card');
+  card.style.display = 'block';
+  document.getElementById('pf-strategy-label').textContent = data.strategy_name;
+  const items = [
+    {lbl:'总收益率', val:data.total_return+'%', cls:data.total_return>=0?'val-green':'val-red'},
+    {lbl:'年化收益', val:data.annual_return+'%', cls:data.annual_return>=0?'val-green':'val-red'},
+    {lbl:'最大回撤', val:data.max_drawdown+'%', cls:'val-red'},
+    {lbl:'Sharpe', val:data.sharpe_ratio, cls:data.sharpe_ratio>=1?'val-green':''},
+    {lbl:'Calmar', val:data.calmar_ratio, cls:data.calmar_ratio>=1?'val-green':''},
+    {lbl:'年化波动', val:data.volatility+'%', cls:''},
+    {lbl:'再平衡次数', val:data.total_rebalances, cls:''},
+    {lbl:'平均换手率', val:data.turnover+'%', cls:''},
+  ];
+  document.getElementById('pf-stats-grid').innerHTML = items.map(i =>
+    '<div class="bt-cell"><div class="bt-val ' + i.cls + '">' + i.val + '</div><div class="bt-lbl">' + i.lbl + '</div></div>'
+  ).join('');
+
+  // 权益曲线
+  const ecard = document.getElementById('pf-equity-card');
+  ecard.style.display = 'block';
+  const el = document.getElementById('pf-chart-equity');
+  if (pfEquityChart) { pfEquityChart.remove(); pfEquityChart = null; }
+  pfEquityChart = LightweightCharts.createChart(el, {
+    layout: { background:{color:CHART_BG}, textColor:TEXT_COLOR, fontFamily:"'Noto Sans SC',sans-serif", fontSize:12 },
+    grid: { vertLines:{color:GRID_COLOR}, horzLines:{color:GRID_COLOR} },
+    rightPriceScale: { borderColor:GRID_COLOR },
+    timeScale: { borderColor:GRID_COLOR, timeVisible:false },
+    width: el.clientWidth, height: 280,
+  });
+  const line = pfEquityChart.addAreaSeries({
+    lineColor:'#4f8ff7', topColor:'rgba(79,143,247,0.3)', bottomColor:'rgba(79,143,247,0.02)', lineWidth:2, title:'组合'
+  });
+  line.setData(data.equity_curve);
+  if (data.benchmark_curve && data.benchmark_curve.length) {
+    const bm = pfEquityChart.addLineSeries({ color:'#ffb347', lineWidth:1.5, lineStyle:2, title:'等权基准' });
+    bm.setData(data.benchmark_curve);
+  }
+  pfEquityChart.timeScale().fitContent();
+
+  // 持仓变化表
+  const wcard = document.getElementById('pf-weights-card');
+  wcard.style.display = 'block';
+  const syms = data.symbols;
+  let html = '<thead><tr><th>日期</th>' + syms.map(s => {
+    const a = pfAssetLib.find(x => x.symbol === s);
+    return '<th style="font-size:11px;">' + (a ? a.name : s) + '</th>';
+  }).join('') + '</tr></thead><tbody>';
+  data.weight_history.forEach(wh => {
+    const d = new Date(wh.time * 1000);
+    const ds = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+    html += '<tr><td style="font-size:11px;">' + ds + '</td>';
+    syms.forEach(s => {
+      const w = wh.weights[s] || 0;
+      const pct = (w * 100).toFixed(1) + '%';
+      const bg = w > 0 ? 'rgba(79,143,247,' + Math.min(w * 0.6, 0.4) + ')' : '';
+      html += '<td style="background:' + bg + ';font-size:11px;text-align:center;">' + pct + '</td>';
+    });
+    html += '</tr>';
+  });
+  html += '</tbody>';
+  document.getElementById('pf-weight-table').innerHTML = html;
+}
+
 </script>
 </body>
 </html>"""
