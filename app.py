@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from src.data import fetch_stock_daily, fetch_stock_info, search_stock, fetch_realtime_quote, fetch_realtime_quotes_batch, merge_realtime_bar
 from src.signals import compute_signals, get_latest_signal, SignalParams
-from src.backtest import backtest, get_strategy_list, get_preset_list, backtest_compare
+from src.backtest import backtest, get_strategy_list, get_preset_list, backtest_compare, walk_forward_backtest
 
 app = Flask(__name__)
 
@@ -596,6 +596,40 @@ def api_backtest_compare():
     return jsonify(results)
 
 
+@app.route("/api/backtest/walkforward")
+def api_backtest_walkforward():
+    symbol = request.args.get("symbol", "688110").strip()
+    start = request.args.get("start", "20240101").strip()
+    end = request.args.get("end", "").strip()
+    strategy = request.args.get("strategy", "macd_rsi").strip()
+    n_windows = int(request.args.get("n_windows", "5"))
+    train_ratio = float(request.args.get("train_ratio", "0.7"))
+
+    p = _parse_signal_params()
+    initial_capital, commission, stamp_tax, slippage_bps, min_commission, max_drawdown_limit, _ = _parse_capital_params()
+    stop_config = _parse_stop_config()
+    position_config = _parse_position_config()
+
+    try:
+        df = fetch_stock_daily(symbol, start, end)
+    except Exception as e:
+        return jsonify({"error": f"数据获取失败: {e}"}), 400
+
+    try:
+        result = walk_forward_backtest(
+            df, params=p, initial_capital=initial_capital,
+            commission=commission, stamp_tax=stamp_tax,
+            strategy=strategy, stop_config=stop_config,
+            position_config=position_config,
+            slippage_bps=slippage_bps, min_commission=min_commission,
+            max_drawdown_limit=max_drawdown_limit,
+            train_ratio=train_ratio, n_windows=n_windows)
+    except Exception as e:
+        return jsonify({"error": f"Walk-forward失败: {e}"}), 500
+
+    return jsonify(result)
+
+
 # ---------------------------------------------------------------------------
 # HTML
 # ---------------------------------------------------------------------------
@@ -912,6 +946,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <button class="btn btn-primary" onclick="doAnalyze()">分析</button>
   <button class="btn btn-warn" onclick="doBacktest()">回测</button>
   <button class="btn" style="background:var(--purple);color:#fff;" onclick="showCompareModal()">策略对比</button>
+  <button class="btn" style="background:#e67e22;color:#fff;font-size:12px;" onclick="doWalkForward()">Walk-Forward</button>
 
   <span class="stock-name" id="stock-name"></span>
   <span id="realtime-price" style="font-family:'JetBrains Mono',monospace;font-size:20px;font-weight:700;margin-left:8px;"></span>
@@ -1966,6 +2001,69 @@ async function doCompare() {
 
     panel.scrollIntoView({behavior:'smooth'});
   } catch(e) { alert('策略对比失败: '+e.message); } finally { hideSpinner(); }
+}
+
+// ---- Walk-Forward Validation ----
+async function doWalkForward() {
+  const start = getStartDate();
+  const end = getEndDate();
+  if (!currentSymbol) { alert('请选择或输入股票'); return; }
+
+  showSpinner();
+  try {
+    const url = `/api/backtest/walkforward?symbol=${currentSymbol}&start=${start}&end=${end}` +
+      `&strategy=${g('bt-strategy')}&n_windows=5&train_ratio=0.7` +
+      `&initial_capital=${g('bt-capital')}&commission=${g('bt-commission')}&stamp_tax=${g('bt-tax')}` +
+      `&slippage_bps=${g('bt-slippage')}&min_commission=${g('bt-min-comm')}&max_drawdown_limit=${parseFloat(g('bt-dd-limit'))/100}` +
+      `&stop_loss_pct=${parseFloat(g('bt-sl'))/100}&take_profit_pct=${parseFloat(g('bt-tp'))/100}&trailing_stop_pct=${parseFloat(g('bt-tsl'))/100}&atr_stop_mult=${g('bt-atrsl')}` +
+      `&position_mode=${g('bt-pos-mode')}&position_pct=${parseFloat(g('bt-pos-pct'))/100}` +
+      getSignalParams();
+    const resp = await fetch(url);
+    const data = await resp.json();
+    if (data.error) { alert(data.error); hideSpinner(); return; }
+
+    const panel = document.getElementById('backtest-panel');
+    panel.style.display = 'block';
+    document.getElementById('equity-box').style.display = 'none';
+    document.getElementById('compare-box').style.display = 'none';
+    document.getElementById('bt-strategy-label').textContent = '— Walk-Forward验证';
+
+    const s = data.summary;
+    if (s.error) { 
+      document.getElementById('bt-grid').innerHTML = `<div style="grid-column:1/-1;color:var(--red);">${s.error}</div>`;
+      hideSpinner(); return;
+    }
+
+    const items = [
+      {lbl:'平均测试收益', val:s.avg_test_return+'%', cls:s.avg_test_return>=0?'val-green':'val-red'},
+      {lbl:'平均测试Sharpe', val:s.avg_test_sharpe, cls:s.avg_test_sharpe>=1?'val-green':''},
+      {lbl:'盈利窗口', val:s.win_windows+'/'+s.total_windows, cls:s.win_windows>s.total_windows/2?'val-green':'val-red'},
+      {lbl:'一致性评分', val:s.consistency_score+'%', cls:s.consistency_score>=60?'val-green':'val-red'},
+    ];
+    document.getElementById('bt-grid').innerHTML = items.map(i=>`<div class="bt-cell"><div class="bt-val ${i.cls}">${i.val}</div><div class="bt-lbl">${i.lbl}</div></div>`).join('');
+
+    // Window details table
+    const table = document.getElementById('bt-trades');
+    let html = '<thead><tr><th>#</th><th>训练期</th><th>测试期</th><th>训练收益</th><th>测试收益</th><th>测试Sharpe</th><th>测试回撤</th><th>交易数</th></tr></thead><tbody>';
+    data.windows.forEach(w => {
+      const trainCls = w.train_return>=0?'val-green':'val-red';
+      const testCls = w.test_return>=0?'val-green':'val-red';
+      html += `<tr>
+        <td>${w.window_id}</td>
+        <td style="font-size:11px;">${w.train_period}</td>
+        <td style="font-size:11px;">${w.test_period}</td>
+        <td class="${trainCls}">${w.train_return}%</td>
+        <td class="${testCls}">${w.test_return}%</td>
+        <td>${w.test_sharpe}</td>
+        <td class="val-red">${w.test_max_dd}%</td>
+        <td>${w.test_trades}</td>
+      </tr>`;
+    });
+    html += '</tbody>';
+    table.innerHTML = html;
+
+    panel.scrollIntoView({behavior:'smooth'});
+  } catch(e) { alert('Walk-Forward失败: '+e.message); } finally { hideSpinner(); }
 }
 
 // ---- Theme ----

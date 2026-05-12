@@ -235,10 +235,27 @@ def _fetch_eastmoney(symbol: str, start_date: str, end_date: str) -> pd.DataFram
 # 统一接口
 # ============================================================
 def fetch_stock_daily(symbol: str, start_date: str = "20230101", end_date: str = "",
-                      period: str = "daily") -> pd.DataFrame:
+                      period: str = "daily", validate: bool = True) -> pd.DataFrame:
     """
     获取K线数据
     period: "5min", "15min", "30min", "1h", "daily", "weekly", "monthly"
+    validate: 是否进行数据质量校验(默认开启)
+    """
+    df = _fetch_stock_daily_raw(symbol, start_date, end_date, period)
+    if validate and period in ("daily", "weekly", "monthly") and len(df) > 0:
+        df, report = validate_ohlcv(df)
+        if report["nan_filled"] > 0:
+            print(f"  [数据校验] 填充了 {report['nan_filled']} 个缺失值")
+        if report["suspended"]:
+            print(f"  [数据校验] {len(report['suspended'])} 个停牌日")
+        if report["ohlc_fixed"] > 0:
+            print(f"  [数据校验] 修复了 {report['ohlc_fixed']} 条OHLC逻辑异常")
+    return df
+
+
+def _fetch_stock_daily_raw(symbol: str, start_date: str = "20230101", end_date: str = "",
+                           period: str = "daily") -> pd.DataFrame:
+    """获取原始K线数据(不校验)
     """
     if not end_date:
         end_date = pd.Timestamp.now().strftime("%Y%m%d")
@@ -295,6 +312,90 @@ def fetch_stock_daily(symbol: str, start_date: str = "20230101", end_date: str =
         errors.append(f"腾讯财经: {e}")
 
     raise ConnectionError(f"所有数据源均失败:\n" + "\n".join(errors))
+
+
+# ============================================================
+# 数据质量校验
+# ============================================================
+
+def validate_ohlcv(df: pd.DataFrame, max_gap_days: int = 3, 
+                   max_daily_change: float = 0.22) -> tuple:
+    """
+    校验并清洗OHLCV数据
+    
+    检测项:
+    1. NaN/缺失值 — forward-fill, 连续缺失超过max_gap_days则标记
+    2. 异常价格 — 单日涨跌幅 > max_daily_change (A股涨跌停20%, ST 5%, 留2%余量)
+    3. 零成交量 — 标记为停牌日
+    4. OHLC逻辑 — high >= low, high >= open/close, low <= open/close
+    
+    参数:
+        df: OHLCV DataFrame (DatetimeIndex)
+        max_gap_days: 允许的最大连续缺失天数
+        max_daily_change: 单日涨跌幅异常阈值 (0.22 = 22%)
+    
+    返回:
+        (cleaned_df, report_dict)
+        report_dict: {"nan_filled": int, "anomalies": list, "suspended": list, "ohlc_fixed": int}
+    """
+    if df is None or df.empty:
+        return df, {"nan_filled": 0, "anomalies": [], "suspended": [], "ohlc_fixed": 0}
+    
+    cleaned = df.copy()
+    report = {"nan_filled": 0, "anomalies": [], "suspended": [], "ohlc_fixed": 0}
+    
+    # 1. NaN检测与填充
+    nan_count = cleaned[["open", "high", "low", "close", "volume"]].isna().sum().sum()
+    if nan_count > 0:
+        # 检查连续NaN
+        close_nan = cleaned["close"].isna()
+        if close_nan.any():
+            groups = (close_nan != close_nan.shift()).cumsum()
+            for _, grp in close_nan.groupby(groups):
+                if grp.all() and len(grp) > max_gap_days:
+                    dates = grp.index.strftime("%Y-%m-%d").tolist()
+                    report["anomalies"].append(
+                        f"连续{len(grp)}天数据缺失: {dates[0]}~{dates[-1]}")
+        
+        cleaned[["open", "high", "low", "close"]] = cleaned[["open", "high", "low", "close"]].ffill().bfill()
+        cleaned["volume"] = cleaned["volume"].fillna(0)
+        report["nan_filled"] = int(nan_count)
+    
+    # 2. 异常价格检测 (单日涨跌幅)
+    pct_change = cleaned["close"].pct_change().abs()
+    anomaly_mask = pct_change > max_daily_change
+    if anomaly_mask.any():
+        for date in cleaned.index[anomaly_mask]:
+            change = pct_change.loc[date]
+            report["anomalies"].append(
+                f"{date.strftime('%Y-%m-%d')}: 涨跌幅{change:.1%}")
+    
+    # 3. 零成交量 (停牌)
+    zero_vol = cleaned["volume"] == 0
+    if zero_vol.any():
+        suspended_dates = cleaned.index[zero_vol].strftime("%Y-%m-%d").tolist()
+        report["suspended"] = suspended_dates
+        # 停牌日不删除, 但在回测时这些bar的信号应被忽略
+        # 这里给cleaned加一个标记列
+        cleaned["suspended"] = zero_vol
+    else:
+        cleaned["suspended"] = False
+    
+    # 4. OHLC逻辑修复
+    fix_count = 0
+    # high应该 >= open, close, low
+    bad_high = (cleaned["high"] < cleaned[["open", "close"]].max(axis=1))
+    if bad_high.any():
+        cleaned.loc[bad_high, "high"] = cleaned.loc[bad_high, ["open", "close", "high"]].max(axis=1)
+        fix_count += int(bad_high.sum())
+    # low应该 <= open, close, high
+    bad_low = (cleaned["low"] > cleaned[["open", "close"]].min(axis=1))
+    if bad_low.any():
+        cleaned.loc[bad_low, "low"] = cleaned.loc[bad_low, ["open", "close", "low"]].min(axis=1)
+        fix_count += int(bad_low.sum())
+    report["ohlc_fixed"] = fix_count
+    
+    return cleaned, report
 
 
 def fetch_stock_info(symbol: str) -> str:

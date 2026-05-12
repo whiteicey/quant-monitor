@@ -522,6 +522,17 @@ def _run_backtest_core(
 
         # ========== 第1步: 执行上一bar的待执行订单 ==========
         if pending_action is not None:
+            # 停牌日不能成交, 保留pending到下一个交易日
+            if row.get("suspended", False):
+                eq_curve.append(capital + position * price)
+                # 回撤熔断检查
+                if max_drawdown_limit > 0 and not breaker_active:
+                    peak_equity = max(peak_equity, eq_curve[-1])
+                    current_dd = (peak_equity - eq_curve[-1]) / peak_equity
+                    if current_dd >= max_drawdown_limit:
+                        breaker_active = True
+                        breaker_triggered = True
+                continue
             action_type = pending_action[0]
 
             if action_type == "buy" and position == 0 and not breaker_active:
@@ -592,6 +603,11 @@ def _run_backtest_core(
         # ========== 第4步: 产生新信号(下一bar执行) ==========
         is_buy = bool(buy_mask.iloc[i]) if hasattr(buy_mask, 'iloc') else bool(buy_mask[i])
         is_sell = bool(sell_mask.iloc[i]) if hasattr(sell_mask, 'iloc') else bool(sell_mask[i])
+
+        # 停牌日不产生信号
+        if row.get("suspended", False):
+            is_buy = False
+            is_sell = False
 
         # 止盈止损检查(盘中即时触发, 当日当价成交, 不走next-bar)
         if position > 0 and stop_config:
@@ -725,3 +741,111 @@ def backtest_compare(
 
     results.sort(key=lambda x: x["total_return"], reverse=True)
     return results
+
+
+# ============================================================
+# Walk-Forward 验证
+# ============================================================
+
+def walk_forward_backtest(
+    df: pd.DataFrame,
+    params: SignalParams = None,
+    initial_capital: float = 1000000.0,
+    commission: float = 0.00025,
+    stamp_tax: float = 0.0005,
+    strategy: str = "macd_rsi",
+    stop_config=None,
+    position_config=None,
+    slippage_bps: float = 0.0,
+    min_commission: float = 5.0,
+    max_drawdown_limit: float = 0.0,
+    # Walk-forward 参数
+    train_ratio: float = 0.7,     # 每个窗口训练集占比
+    n_windows: int = 5,           # 滚动窗口数量
+    min_train_bars: int = 60,     # 最少训练bar数
+) -> dict:
+    """
+    Walk-Forward 验证: 滚动窗口训练/测试
+    
+    将数据分成 n_windows 个重叠窗口, 每个窗口:
+    - 前 train_ratio 用于训练(产生信号参数的适用区间)
+    - 后 (1-train_ratio) 用于测试(验证策略在未见数据的表现)
+    
+    返回:
+    {
+        "windows": [{window_id, train_period, test_period, train_return, test_return, test_sharpe, test_trades}, ...],
+        "summary": {avg_test_return, avg_test_sharpe, win_windows, total_windows, consistency_score}
+    }
+    """
+    signals_df = compute_signals(df, params)
+    n = len(signals_df)
+    
+    if n < min_train_bars * 2:
+        return {"windows": [], "summary": {"error": f"数据不足: {n}条, 至少需要{min_train_bars*2}条"}}
+    
+    # 计算窗口划分: 等步长滑动
+    test_size = int(n * (1 - train_ratio) / n_windows)
+    if test_size < 10:
+        test_size = 10
+    
+    windows = []
+    for w in range(n_windows):
+        test_end = n - w * test_size
+        test_start = test_end - test_size
+        train_start = max(0, test_start - int(test_size * train_ratio / (1 - train_ratio)))
+        
+        if train_start >= test_start or test_start < min_train_bars:
+            continue
+        if test_end > n:
+            continue
+            
+        train_signals = signals_df.iloc[train_start:test_start]
+        test_signals = signals_df.iloc[test_start:test_end]
+        
+        if len(train_signals) < min_train_bars or len(test_signals) < 5:
+            continue
+        
+        # 训练集回测
+        train_result = _run_backtest_core(
+            train_signals, STRATEGIES[strategy][1], initial_capital,
+            commission, stamp_tax, min_commission, slippage_bps,
+            max_drawdown_limit, stop_config, position_config)
+        
+        # 测试集回测
+        test_result = _run_backtest_core(
+            test_signals, STRATEGIES[strategy][1], initial_capital,
+            commission, stamp_tax, min_commission, slippage_bps,
+            max_drawdown_limit, stop_config, position_config)
+        
+        train_period = f"{train_signals.index[0].strftime('%Y-%m-%d')}~{train_signals.index[-1].strftime('%Y-%m-%d')}"
+        test_period = f"{test_signals.index[0].strftime('%Y-%m-%d')}~{test_signals.index[-1].strftime('%Y-%m-%d')}"
+        
+        windows.append({
+            "window_id": n_windows - w,
+            "train_period": train_period,
+            "test_period": test_period,
+            "train_return": round(train_result["total_return"], 2),
+            "test_return": round(test_result["total_return"], 2),
+            "test_sharpe": round(test_result["sharpe"], 2),
+            "test_max_dd": round(test_result["max_dd"], 2),
+            "test_trades": test_result["num_trades"],
+        })
+    
+    windows.sort(key=lambda x: x["window_id"])
+    
+    # 汇总
+    if windows:
+        test_returns = [w["test_return"] for w in windows]
+        test_sharpes = [w["test_sharpe"] for w in windows]
+        win_windows = sum(1 for r in test_returns if r > 0)
+        summary = {
+            "avg_test_return": round(sum(test_returns) / len(test_returns), 2),
+            "avg_test_sharpe": round(sum(test_sharpes) / len(test_sharpes), 2),
+            "win_windows": win_windows,
+            "total_windows": len(windows),
+            "consistency_score": round(win_windows / len(windows) * 100, 1),
+        }
+    else:
+        summary = {"error": "无法生成有效窗口"}
+    
+    return {"windows": windows, "summary": summary}
