@@ -3,43 +3,49 @@
 ## 项目信息
 - **仓库**: https://github.com/whiteicey/quant-monitor
 - **本地路径**: C:\Users\autumn\Desktop\chat\quant-monitor
-- **当前版本**: v1.8.0
+- **当前版本**: v1.9.2
 - **技术栈**: Python 3.12 + Flask + LightweightCharts + Chaquopy(Android)
 
 ## 项目所有者
 - 25岁程序员，目标40岁前存1000万
 - 项目给爸爸用（非技术用户）
+- "自选股"和"个股详情"主要是爸爸用
+- "资产配置"是自己用（但爸爸也能看）
 - 同时有wealth-manager项目: https://whiteicey.github.io/wealth-manager/
 
-## 当前功能（已完成16项）
+## 当前功能（已完成）
 - 自选股列表 + 实时行情5秒刷新
 - 13种回测策略 + 13套参数预设 + 7种关键价位模式
-- 收益曲线图 + 策略对比(多选多曲线)
+- 收益曲线图 + 策略对比(多选多曲线) + 买入持有基准线
 - 止盈止损(4种模式: 固定止损/止盈/移动止损/ATR)
 - 仓位管理(全仓/固定比例/凯利公式)
 - 多周期共振(日线+周线确认)
 - 信号提醒(toast+蜂鸣声+独立声音开关)
 - 10个技术指标(EMA/MACD/RSI/BB/KDJ/OBV/VWAP/ATR/成交量/支撑阻力)
-- 板块联动(行业归属+强弱TOP5)
+- 板块联动(行业归属+强弱TOP10)
 - 图表绘图工具(水平线+趋势线+localStorage持久化)
 - 深色/浅色主题 + A股红涨绿跌配色
 - 数据缓存 + 多数据源fallback(东方财富/新浪/腾讯)
+- 数据质量校验(NaN/停牌/OHLC修复)
+- Walk-forward验证 + 样本外测试
 - Android APK(GitHub Actions自动构建)
 - Windows exe(PyInstaller)
+- USER_GUIDE.md 用户使用指南
 
 ## 代码架构
 ```
-app.py              — Flask路由 + 内联HTML/CSS/JS (~2300行)
+app.py              — Flask路由 + 内联HTML/CSS/JS (~2500行)
 src/
   indicators.py     — 技术指标(EMA/SMA/RSI/MACD/BB/ATR/KDJ/OBV/VWAP)
   signals.py        — 信号引擎(compute_signals + get_latest_signal + SignalParams)
-  backtest.py       — 回测引擎(13策略 + 13预设 + backtest/backtest_compare)
-  data.py           — 数据获取(多源fallback + 缓存 + 实时行情 + 板块)
+  backtest.py       — 回测引擎(13策略+13预设+next-open+T+1+walk-forward)
+  data.py           — 数据获取(多源fallback+缓存+实时行情+板块+数据校验)
   extensions.py     — 止损/仓位/MTF/提醒接口
-  interfaces.py     — 量化交易Protocol接口(Strategy/ExecutionModel/DataProvider/RiskManager/MetricsCalculator)
+  interfaces.py     — 量化交易Protocol接口
   visualize.py      — matplotlib图表(CLI版)
 android/            — Chaquopy Android项目
 .github/workflows/  — APK自动构建
+USER_GUIDE.md       — 面向爸爸的使用指南
 ```
 
 ## 已确认的开发计划
@@ -66,12 +72,89 @@ android/            — Chaquopy Android项目
 9. **数据质量校验**: ✅ NaN填充/异常价格/停牌标记/OHLC修复
 10. **Walk-forward验证**: ✅ 滚动窗口+一致性评分
 
-### Phase 2: 策略研究平台
-- 因子模型(IC/IR)
-- 统计检验(Sharpe CI/t检验)
-- 多资产组合回测
-- ETF轮动策略(A500/红利/纳指100)
-- 参数优化+过拟合检测
+### v1.9.2 全量代码review ✅ 已完成
+修复20+问题，详见 git log。关键修复:
+- 止损T+1丢失bug → 排队到下一bar
+- 权益曲线止损滞后 → 即时更新
+- return_pct改为净收益率 → Kelly不再过度下注
+- RSI持平=50(原100) / BB ddof=0 / KDJ inf修复
+- SafeEncoder -Infinity顺序 / 缓存防修改 / 实时行情防护
+
+---
+
+### Phase 2a: 多资产配置系统（当前任务）
+
+#### 核心原则
+- **独立界面**: 顶部新增第三个tab [资产配置]，与爸爸的"自选股/个股详情"分隔
+- **不局限于ETF**: 通用多资产配置系统，覆盖ETF/个股/贵金属/债券/货币
+- **预设+自定义并存**: 预设方案可复制后修改，自由增删资产
+
+#### 支持的资产类别
+| 类别 | 标的举例 | 数据来源 |
+|------|---------|---------|
+| 宽基ETF | A500(560610)、沪深300(510300)、中证500(510500)、创业板(159915) | 东方财富(已有) |
+| 行业/主题ETF | 红利(510880)、消费(159928)、医药(512010)、半导体(512480) | 同上 |
+| 跨境ETF | 纳指100(513100)、标普500(513500)、恒生科技(513180) | 同上 |
+| 债券ETF | 国债(511010)、企债(511210) | 同上 |
+| 货币基金(防守) | 货币ETF(511880) | 同上 |
+| 贵金属 | 黄金ETF(518880)、白银基金(161226) | 同上 |
+| 高股息个股 | 长江电力(600900)、中国神华(601088)、大秦铁路(601006) | 同上 |
+| 商品 | 豆粕ETF(159985)、有色金属(512400) | 同上 |
+
+#### 预设资产池
+必须内置的预设方案（用户可以"复制并修改"来创建自定义方案）：
+1. **经典三驾马车**: A500 ETF + 国债ETF + 黄金ETF
+2. **全天候配置**: 沪深300 + 中证500 + 纳指100 + 国债 + 黄金 + 货币
+3. **高息防守**: 红利ETF + 长江电力 + 中国神华 + 国债 + 黄金
+4. **激进成长**: 创业板 + 半导体 + 纳指100 + 恒生科技
+
+#### 配置策略（全部实现）
+| 策略 | 原理 | 复杂度 |
+|------|------|--------|
+| 等权配置 | 每个资产等权，定期再平衡 | 最低 |
+| 动量轮动 | 选近N天涨最多的X个 | 低 |
+| 均线过滤 | 只买在均线上方的，其余转货币 | 低 |
+| 风险平价 | 按波动率倒数分配权重 | 中 |
+| 均值方差(马科维茨) | 最优化收益/风险比 | 高 |
+| 自适应配置 | 动量+风险平价混合 | 中 |
+
+#### 智能建议功能
+- 根据选定的资产池，**自动推荐**最适合的配置策略
+- 根据策略和资产特性，**自动推荐**再平衡频率
+  - 例：动量轮动→月度；等权配置→季度；触发式→偏离5%时
+- 推荐原因要以文字形式展示给用户
+
+#### 再平衡频率
+- 月度（默认）
+- 周度 / 双周
+- 季度
+- 触发式（偏离目标权重超过N%时）
+- 由系统根据配置策略给出推荐
+
+#### 前端界面设计要求
+- 顶部tab: [自选股] [个股详情] **[资产配置]**
+- 资产池管理: 预设列表 + "复制并修改" + 自定义方案CRUD
+- 配置策略选择 + 策略说明
+- 组合回测结果: 总收益/年化/最大回撤/Sharpe/Calmar
+- 组合权益曲线图(vs 等权基准 vs 沪深300)
+- 持仓变化时间轴(每次再平衡时的权重变化)
+- 换手率统计
+- 智能建议面板(推荐策略+频率+原因)
+
+#### 后端需要新增的模块
+- `src/portfolio.py` — 多资产组合回测引擎
+- `src/allocation.py` — 配置策略实现(等权/动量/风险平价/均值方差等)
+- `src/presets.py` — 预设资产池管理
+- app.py 新增 `/api/portfolio/*` 系列路由
+
+---
+
+### Phase 2b: 参数优化 + 统计检验
+- 网格搜索 + Walk-forward交叉验证
+- 过拟合概率计算(PBO)
+- Sharpe置信区间、收益t检验
+- 最优策略+参数推荐
+- 多重比较校正(Bonferroni/BHY)
 
 ### Phase 3: 迈向实盘
 - 模拟交易(Paper Trading)
@@ -80,9 +163,8 @@ android/            — Chaquopy Android项目
 - 执行算法(TWAP/VWAP)
 
 ## 已知技术债
-- app.py 2300行内联HTML/CSS/JS（暂不拆分，打包依赖复杂）
-- _SafeEncoder用字符串替换NaN（可能误伤含NaN的字符串）
-- 无T+1、收盘价成交（Phase 1修复）
+- app.py 2500行内联HTML/CSS/JS（暂不拆分，打包依赖复杂）
+- _SafeEncoder用字符串替换NaN（-Infinity顺序已修复，但仍可能误伤含NaN的字符串）
 
 ## 工作流规则
 每次代码修改都需要：
