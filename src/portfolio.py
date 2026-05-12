@@ -16,10 +16,12 @@ from .backtest import _calc_commission, _calc_sell_revenue, _calc_buy_cost
 # 数据对齐
 # ============================================================
 
-def fetch_multi_asset_data(symbols: List[str], start: str, end: str) -> pd.DataFrame:
+def fetch_multi_asset_data(symbols: List[str], start: str, end: str) -> tuple:
     """
     拉取多只标的日线收盘价, 对齐日期(inner join)
-    返回: DataFrame, index=DatetimeIndex, columns=symbols, values=close price
+    返回: (prices_df, actual_symbols)
+      prices_df: DataFrame, index=DatetimeIndex, columns=实际获取成功的symbols
+      actual_symbols: 实际获取成功的symbol列表(顺序与columns一致)
     """
     all_close = {}
     errors = []
@@ -37,15 +39,20 @@ def fetch_multi_asset_data(symbols: List[str], start: str, end: str) -> pd.DataF
     prices = pd.DataFrame(all_close)
     rows_before = len(prices)
     prices = prices.dropna()  # inner join: 只保留所有标的都有数据的日期
+    actual_symbols = list(prices.columns)
 
     if len(prices) < 10:
         raise ValueError(f"对齐后数据不足: {len(prices)}行(至少需要10行)")
+
+    if len(actual_symbols) < len(symbols):
+        failed = set(symbols) - set(actual_symbols)
+        print(f"  [数据获取] {len(failed)}个标的获取失败已跳过: {', '.join(failed)}")
 
     if rows_before - len(prices) > 10:
         print(f"  [数据对齐] 丢弃了 {rows_before - len(prices)} 行(部分标的数据缺失), "
               f"实际范围: {prices.index[0].strftime('%Y-%m-%d')} ~ {prices.index[-1].strftime('%Y-%m-%d')}")
 
-    return prices
+    return prices, actual_symbols
 
 
 # ============================================================
@@ -132,7 +139,10 @@ def portfolio_backtest(
     5. 返回权益曲线 + 持仓变化 + 统计指标
     """
     # 1. 数据
-    prices = fetch_multi_asset_data(symbols, start, end)
+    prices, actual_symbols = fetch_multi_asset_data(symbols, start, end)
+    symbols = actual_symbols  # 用实际获取成功的标的列表
+    if len(symbols) < 2:
+        raise ValueError(f"获取成功的标的不足2个(仅{len(symbols)}个), 无法进行组合回测")
     returns = prices.pct_change().fillna(0).replace([np.inf, -np.inf], 0)
     n_assets = len(symbols)
     n_days = len(prices)
