@@ -1231,7 +1231,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
   </div>
     </div>
   </div>
-</div>
 
 <!-- 资产配置视图 -->
 <div id="view-portfolio" style="display:none;padding:16px;width:100%;overflow-y:auto;">
@@ -1314,6 +1313,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     </div>
   </div>
 </div>
+</div><!-- end .main -->
 
 <div class="modal-overlay" id="compare-modal">
   <div class="modal-box">
