@@ -118,8 +118,9 @@ def calc_position_size(capital: float, effective_price: float, config: PositionC
     elif config.mode == "kelly":
         p, b = win_rate, avg_win_loss_ratio
         kelly_pct = max(0, (p * b - (1 - p)) / b) if b > 0 else 0
-        kelly_pct = min(kelly_pct, 0.5)  # 半Kelly
-        amount = capital * kelly_pct if kelly_pct > 0.01 else capital * 0.1  # 最少10%
+        kelly_pct = kelly_pct / 2  # 半Kelly: 用一半仓位降低波动
+        kelly_pct = min(kelly_pct, 0.5)  # 硬上限50%
+        amount = capital * kelly_pct if kelly_pct > 0.01 else capital * 0.01  # 极小edge时最少1%
     else:
         amount = capital
 

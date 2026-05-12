@@ -372,10 +372,22 @@ def backtest(
     7. 基准对比: 返回buy&hold基准曲线
     8. 样本外测试: oos_split比例切分
     """
+    if df is None or len(df) < 2:
+        return BacktestResult(
+            total_return=0, annual_return=0, max_drawdown=0, win_rate=0,
+            total_trades=0, profit_trades=0, loss_trades=0, sharpe_ratio=0,
+            trades=pd.DataFrame(), strategy_name="", equity_curve=[], benchmark_curve=[])
+
     if _precomputed_signals is not None:
         signals_df = _precomputed_signals.copy()
     else:
         signals_df = compute_signals(df, params)
+
+    if len(signals_df) < 2:
+        return BacktestResult(
+            total_return=0, annual_return=0, max_drawdown=0, win_rate=0,
+            total_trades=0, profit_trades=0, loss_trades=0, sharpe_ratio=0,
+            trades=pd.DataFrame(), strategy_name="", equity_curve=[], benchmark_curve=[])
 
     if weekly_signals_df is not None:
         signals_df = _merge_weekly_signals(signals_df, weekly_signals_df)
@@ -580,7 +592,7 @@ def _run_backtest_core(
                     "exit_price": round(fill_price, 2),
                     "shares": position,
                     "pnl": round(pnl, 2),
-                    "return_pct": round((fill_price / entry_price - 1) * 100, 2),
+                    "return_pct": round(pnl / (position * entry_price + buy_comm) * 100, 2),
                     "exit_type": exit_type,
                 })
                 position = 0
@@ -634,11 +646,16 @@ def _run_backtest_core(
                         "exit_price": round(fill_price, 2),
                         "shares": position,
                         "pnl": round(pnl, 2),
-                        "return_pct": round((fill_price / entry_price - 1) * 100, 2),
+                        "return_pct": round(pnl / (position * entry_price + buy_comm) * 100, 2),
                         "exit_type": stop_type,
                     })
                     position = 0
                     max_price_since_entry = 0.0
+                    # 更新权益曲线(止损后position=0, capital已更新)
+                    eq_curve[-1] = capital
+                else:
+                    # T+1阻止: 排队到下一bar以信号卖出方式执行
+                    pending_action = ("sell", i, stop_type)
                 continue  # 止损优先, 不看其他信号
 
         if is_buy and position == 0 and not breaker_active:

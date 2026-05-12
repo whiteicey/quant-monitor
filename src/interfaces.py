@@ -89,10 +89,14 @@ class MetricsCalculator:
     def sharpe_ratio(returns: pd.Series, risk_free: float = 0.0, 
                      periods: int = 252) -> float:
         """年化Sharpe比率"""
-        excess = returns - risk_free / periods
-        if excess.std() == 0:
+        if len(returns) < 2:
             return 0.0
-        return float(excess.mean() / excess.std() * (periods ** 0.5))
+        daily_rf = (1 + risk_free) ** (1 / periods) - 1
+        excess = returns - daily_rf
+        std = excess.std()
+        if std == 0 or pd.isna(std):
+            return 0.0
+        return float(excess.mean() / std * (periods ** 0.5))
     
     @staticmethod
     def max_drawdown(equity_curve: pd.Series) -> float:

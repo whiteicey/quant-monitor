@@ -21,7 +21,10 @@ def rsi(close: pd.Series, period: int = 14) -> pd.Series:
     avg_loss = loss.ewm(alpha=1 / period, min_periods=period).mean()
     rs = avg_gain / avg_loss.replace(0, np.nan)
     result = 100 - (100 / (1 + rs))
-    result = result.fillna(100)  # All gains, no losses → RSI = 100
+    # 价格完全持平(gain=0, loss=0) → RSI=50; 纯涨无跌 → RSI=100
+    flat_mask = (avg_gain == 0) & (avg_loss == 0)
+    result = result.where(~flat_mask, 50)
+    result = result.fillna(100)
     return result
 
 
@@ -38,7 +41,7 @@ def macd(close: pd.Series, fast: int = 6, slow: int = 7, signal: int = 4):
 def bollinger_bands(close: pd.Series, period: int = 20, mult: float = 2.0):
     """返回 (upper, basis, lower)"""
     basis = sma(close, period)
-    std = close.rolling(window=period).std()
+    std = close.rolling(window=period).std(ddof=0)
     upper = basis + mult * std
     lower = basis - mult * std
     return upper, basis, lower
@@ -68,7 +71,7 @@ def kdj(high, low, close, n=9, m1=3, m2=3):
     返回 (k, d, j) Series
     """
     rsv = (close - low.rolling(n).min()) / (high.rolling(n).max() - low.rolling(n).min()) * 100
-    rsv = rsv.fillna(50)
+    rsv = rsv.replace([np.inf, -np.inf], np.nan).fillna(50)
     k = rsv.ewm(alpha=1/m1, adjust=False).mean()
     d = k.ewm(alpha=1/m2, adjust=False).mean()
     j = 3 * k - 2 * d

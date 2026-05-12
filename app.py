@@ -55,12 +55,12 @@ class _SafeEncoder(_json.JSONEncoder):
 
     def encode(self, o):
         text = super().encode(o)
-        text = text.replace('NaN', 'null').replace('Infinity', 'null').replace('-Infinity', 'null')
+        text = text.replace('-Infinity', 'null').replace('Infinity', 'null').replace('NaN', 'null')
         return text
 
     def iterencode(self, o, _one_shot=False):
         for chunk in super().iterencode(o, _one_shot):
-            chunk = chunk.replace('NaN', 'null').replace('Infinity', 'null').replace('-Infinity', 'null')
+            chunk = chunk.replace('-Infinity', 'null').replace('Infinity', 'null').replace('NaN', 'null')
             yield chunk
 
 app.json_encoder = _SafeEncoder
@@ -128,13 +128,13 @@ def _parse_capital_params():
         initial_capital = float(request.args.get("initial_capital", "1000000"))
         commission = float(request.args.get("commission", "0.00025"))
         stamp_tax = float(request.args.get("stamp_tax", "0.0005"))
+        slippage_bps = float(request.args.get("slippage_bps", "0"))
+        min_commission = float(request.args.get("min_commission", "5"))
+        max_drawdown_limit = float(request.args.get("max_drawdown_limit", "0"))
+        oos_split = float(request.args.get("oos_split", "0"))
     except (ValueError, TypeError):
         initial_capital, commission, stamp_tax = 1000000.0, 0.00025, 0.0005
-    # Phase 1 新增参数
-    slippage_bps = float(request.args.get("slippage_bps", "0"))
-    min_commission = float(request.args.get("min_commission", "5"))
-    max_drawdown_limit = float(request.args.get("max_drawdown_limit", "0"))
-    oos_split = float(request.args.get("oos_split", "0"))
+        slippage_bps, min_commission, max_drawdown_limit, oos_split = 0.0, 5.0, 0.0, 0.0
     return initial_capital, commission, stamp_tax, slippage_bps, min_commission, max_drawdown_limit, oos_split
 
 
@@ -351,7 +351,7 @@ def api_sector():
     try:
         from src.data import fetch_sector_info, fetch_sector_ranking
         info = fetch_sector_info(symbol)
-        ranking = fetch_sector_ranking(5)
+        ranking = fetch_sector_ranking(10)
         return jsonify({
             "industry": info.get("industry", ""),
             "region": info.get("region", ""),
@@ -1073,9 +1073,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <div class="row"><span class="lbl">所属行业</span><span class="val" id="sector-industry">--</span></div>
       <div class="row"><span class="lbl">所属地域</span><span class="val" id="sector-region" style="font-size:12px;">--</span></div>
       <div class="row"><span class="lbl">概念板块</span><span class="val" id="sector-concepts" style="font-size:11px;word-break:break-all;">--</span></div>
-      <div style="margin-top:10px;font-size:11px;color:var(--text-dim);border-top:1px solid var(--border);padding-top:8px;">今日板块强弱 TOP5</div>
+      <div style="margin-top:10px;font-size:11px;color:var(--text-dim);border-top:1px solid var(--border);padding-top:8px;">今日板块强弱 TOP10</div>
       <div id="sector-strongest" style="margin-top:4px;"></div>
-      <div style="margin-top:8px;font-size:11px;color:var(--text-dim);">最弱 TOP5</div>
+      <div style="margin-top:8px;font-size:11px;color:var(--text-dim);">最弱 TOP10</div>
       <div id="sector-weakest" style="margin-top:4px;"></div>
     </div>
 
@@ -1663,7 +1663,7 @@ async function doBacktest() {
     }
 
     // 画权益曲线
-    drawEquityCurve(data.equity_curve);
+    drawEquityCurve(data.equity_curve, data.benchmark_curve);
     // 隐藏对比区域
     document.getElementById('compare-box').style.display = 'none';
 
@@ -1858,7 +1858,7 @@ const COMPARE_COLORS = [
   '#36d7b7', '#f7dc6f', '#bb8fce', '#85c1e9', '#f0b27a', '#73c6b6'
 ];
 
-function drawEquityCurve(data) {
+function drawEquityCurve(data, benchmarkData) {
   const box = document.getElementById('equity-box');
   if (!data || !data.length) { box.style.display = 'none'; return; }
   box.style.display = 'block';
@@ -1877,6 +1877,12 @@ function drawEquityCurve(data) {
     lineColor: '#4f8ff7', topColor: 'rgba(79,143,247,0.3)', bottomColor: 'rgba(79,143,247,0.02)', lineWidth: 2,
   });
   areaSeries.setData(data);
+
+  // 买入持有基准曲线(虚线)
+  if (benchmarkData && benchmarkData.length) {
+    const bmSeries = equityChart.addLineSeries({ color:'#ffb347', lineWidth:1.5, lineStyle:2, title:'买入持有' });
+    bmSeries.setData(benchmarkData);
+  }
 
   // 初始资金基准线
   const baseline = equityChart.addLineSeries({ color:TEXT_COLOR, lineWidth:1.5, lineStyle:2 });

@@ -43,8 +43,9 @@ def _cache_get(key, category="daily"):
 
 
 def _cache_set(key, data):
-    """写入缓存"""
-    _cache[key] = {"data": data, "ts": _time.time()}
+    """写入缓存(存副本防止外部修改)"""
+    stored = data.copy() if hasattr(data, 'copy') else data
+    _cache[key] = {"data": stored, "ts": _time.time()}
     if len(_cache) > 200:
         _cache_cleanup()
 
@@ -67,11 +68,15 @@ def _strip_jsonp(text):
     return text
 
 
+_sess = None
+
 def _session() -> requests.Session:
-    s = requests.Session()
-    s.trust_env = False
-    s.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
-    return s
+    global _sess
+    if _sess is None:
+        _sess = requests.Session()
+        _sess.trust_env = False
+        _sess.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
+    return _sess
 
 
 def _market_prefix(symbol: str) -> tuple:
@@ -338,7 +343,7 @@ def validate_ohlcv(df: pd.DataFrame, max_gap_days: int = 3,
         (cleaned_df, report_dict)
         report_dict: {"nan_filled": int, "anomalies": list, "suspended": list, "ohlc_fixed": int}
     """
-    if df is None or df.empty:
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
         return df, {"nan_filled": 0, "anomalies": [], "suspended": [], "ohlc_fixed": 0}
     
     cleaned = df.copy()
@@ -383,12 +388,17 @@ def validate_ohlcv(df: pd.DataFrame, max_gap_days: int = 3,
     
     # 4. OHLC逻辑修复
     fix_count = 0
-    # high应该 >= open, close, low
+    # high < low 直接互换
+    bad_hl = cleaned["high"] < cleaned["low"]
+    if bad_hl.any():
+        cleaned.loc[bad_hl, ["high", "low"]] = cleaned.loc[bad_hl, ["low", "high"]].values
+        fix_count += int(bad_hl.sum())
+    # high应该 >= open, close
     bad_high = (cleaned["high"] < cleaned[["open", "close"]].max(axis=1))
     if bad_high.any():
         cleaned.loc[bad_high, "high"] = cleaned.loc[bad_high, ["open", "close", "high"]].max(axis=1)
         fix_count += int(bad_high.sum())
-    # low应该 <= open, close, high
+    # low应该 <= open, close
     bad_low = (cleaned["low"] > cleaned[["open", "close"]].min(axis=1))
     if bad_low.any():
         cleaned.loc[bad_low, "low"] = cleaned.loc[bad_low, ["open", "close", "low"]].min(axis=1)
@@ -448,19 +458,21 @@ def fetch_realtime_quote(symbol: str) -> dict:
         raise ConnectionError("实时行情解析失败")
 
     parts = match.group(1).split(",")
+    if len(parts) < 32:
+        raise ConnectionError("实时行情数据字段不足")
     # 新浪实时数据字段：
     # 0:名称 1:今开 2:昨收 3:当前价 4:最高 5:最低
     # 6:买一 7:卖一 8:成交量(股) 9:成交额
     # 30:日期 31:时间
     return {
         "name": parts[0],
-        "open": float(parts[1]),
-        "yesterday_close": float(parts[2]),
-        "price": float(parts[3]),
-        "high": float(parts[4]),
-        "low": float(parts[5]),
-        "volume": float(parts[8]),
-        "amount": float(parts[9]),
+        "open": float(parts[1]) if parts[1] else 0,
+        "yesterday_close": float(parts[2]) if parts[2] else 0,
+        "price": float(parts[3]) if parts[3] else 0,
+        "high": float(parts[4]) if parts[4] else 0,
+        "low": float(parts[5]) if parts[5] else 0,
+        "volume": float(parts[8]) if parts[8] else 0,
+        "amount": float(parts[9]) if parts[9] else 0,
         "date": parts[30],
         "time": parts[31],
     }
@@ -609,7 +621,7 @@ def fetch_sector_ranking(top_n: int = 5) -> dict:
         for item in items[:top_n]:
             result["strongest"].append({
                 "name": item.get("f14", ""),
-                "change_pct": round(item.get("f3", 0) / 100, 2),
+                "change_pct": round(item.get("f3", 0) / 100, 4),
             })
         
         # 最弱板块
@@ -625,10 +637,12 @@ def fetch_sector_ranking(top_n: int = 5) -> dict:
         for item in items[:top_n]:
             result["weakest"].append({
                 "name": item.get("f14", ""),
-                "change_pct": round(item.get("f3", 0) / 100, 2),
+                "change_pct": round(item.get("f3", 0) / 100, 4),
             })
     except Exception:
         pass
     
-    _cache_set("sector_ranking", result)
+    # 只缓存非空结果, 避免暂时性网络故障被缓存
+    if result["strongest"] or result["weakest"]:
+        _cache_set("sector_ranking", result)
     return result
