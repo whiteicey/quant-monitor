@@ -46,7 +46,7 @@ ASSET_LIBRARY: Dict[str, Asset] = {
     "159866": Asset("159866", "日经ETF", "overseas", "cross_border", "日本股市"),
 
     # 债券ETF
-    "511010": Asset("511010", "国债ETF", "bond", "gov_bond", "10年期国债"),
+    "511010": Asset("511010", "国债ETF", "bond", "gov_bond", "5年期国债"),
     "511210": Asset("511210", "企债ETF", "bond", "corp_bond", "企业债券"),
     "511260": Asset("511260", "十年国债ETF", "bond", "gov_bond", "10年国债(深)"),
 

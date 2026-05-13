@@ -184,6 +184,9 @@ def grid_search_optimize(
                 0, None, None)
 
             item["oos_return"] = round(oos_result["total_return"], 2)
+            # 保存OOS daily returns用于后续统计检验
+            oos_eq = pd.Series(oos_result["eq_curve"])
+            item["oos_daily_returns"] = oos_eq.pct_change().dropna()
 
             # Walk-Forward在OOS数据内部做多窗口验证
             n_oos = len(signals_oos)
@@ -216,11 +219,12 @@ def grid_search_optimize(
     n_worse_oos = sum(1 for item in top_results if item.get("oos_return", 0) <= 0)
     oos_loss_rate = n_worse_oos / max(len(top_results), 1)
 
-    # ========== Phase 4: 统计检验 ==========
+    # ========== Phase 4: 统计检验(基于OOS数据) ==========
     # 按OOS表现重新排序选最优
     top_results.sort(key=lambda x: x.get("oos_return", -999), reverse=True)
     best = top_results[0]
-    best_daily = best.get("daily_returns", pd.Series(dtype=float))
+    # 优先用OOS daily returns做统计检验(真正样本外), 否则fallback到IS
+    best_daily = best.get("oos_daily_returns", best.get("daily_returns", pd.Series(dtype=float)))
 
     sharpe_ci = sharpe_confidence_interval(best_daily)
     ttest = returns_ttest(best_daily)
@@ -246,6 +250,7 @@ def grid_search_optimize(
         item.pop("daily_returns", None)
     for item in top_results:
         item.pop("daily_returns", None)
+        item.pop("oos_daily_returns", None)
 
     # 构造前端友好的结果(只返回top_n)
     display_results = []

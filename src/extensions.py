@@ -1,43 +1,8 @@
 """
-TODO预留接口 - 信号提醒/止盈止损/仓位管理/更多指标/多周期共振
-这些接口目前为空壳，待后续实现
+止盈止损/仓位管理/更多指标/多周期共振
 """
 from dataclasses import dataclass, field
 from typing import List, Optional
-
-
-# ============================================================
-# 信号提醒 (Signal Alerts)
-# ============================================================
-@dataclass
-class AlertConfig:
-    """提醒配置"""
-    enabled: bool = False
-    bull_threshold: int = 4      # 多头评分>=此值触发买入提醒
-    bear_threshold: int = 4      # 空头评分>=此值触发卖出提醒
-    cooldown_seconds: int = 300  # 同一股票提醒冷却时间
-    sound: bool = True           # 是否播放声音
-    # 推送渠道（后续实现）
-    webhook_url: str = ""        # 微信/钉钉/Telegram webhook
-
-
-@dataclass
-class Alert:
-    """一条提醒"""
-    symbol: str
-    name: str
-    alert_type: str  # "buy" / "sell" / "strong_buy" / "strong_sell"
-    message: str
-    timestamp: float = 0
-
-
-def check_alerts(signal_result, symbol: str, name: str, config: AlertConfig = None) -> List[Alert]:
-    """
-    检查信号是否触发提醒
-    TODO: 实现提醒逻辑、冷却机制、推送
-    """
-    # 预留接口，返回空列表
-    return []
 
 
 # ============================================================
@@ -76,11 +41,13 @@ def apply_stop_rules(price: float, low: float, high: float, entry_price: float,
         if low <= atr_stop_price:
             return "stop_loss", atr_stop_price
     
-    # 移动止损: 从最高点回落超过百分比
+    # 移动止损: 需先盈利超过trailing_stop_pct才激活, 然后从最高点回落超过百分比
     if config.trailing_stop_pct > 0 and max_price_since_entry > 0:
-        trail_price = max_price_since_entry * (1 - config.trailing_stop_pct)
-        if low <= trail_price:
-            return "trailing_stop", trail_price
+        # 激活条件: 最高价必须超过entry_price才开始跟踪
+        if max_price_since_entry > entry_price:
+            trail_price = max_price_since_entry * (1 - config.trailing_stop_pct)
+            if low <= trail_price:
+                return "trailing_stop", trail_price
     
     # 固定止盈: 盘中最高价触及止盈线
     if config.take_profit_pct > 0:

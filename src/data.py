@@ -44,27 +44,39 @@ def _cache_get(key, category="daily"):
 
 def _cache_set(key, data):
     """写入缓存(存副本防止外部修改)"""
-    stored = data.copy() if hasattr(data, 'copy') else data
+    import copy as _copy
+    if isinstance(data, (pd.DataFrame, pd.Series)):
+        stored = data.copy()
+    elif isinstance(data, (list, dict)):
+        stored = _copy.deepcopy(data)
+    else:
+        stored = data
     _cache[key] = {"data": stored, "ts": _time.time()}
     if len(_cache) > 200:
         _cache_cleanup()
 
 
 def _cache_cleanup():
-    """Remove expired entries (called periodically)"""
+    """Remove expired entries + enforce hard cap"""
     now = _time.time()
-    expired = [k for k, v in _cache.items() if now - v["ts"] > 3600]  # Remove anything older than 1 hour
+    expired = [k for k, v in _cache.items() if now - v["ts"] > 3600]
     for k in expired:
         del _cache[k]
+    # 硬上限: 超过500条时删最旧的
+    while len(_cache) > 500:
+        oldest = min(_cache, key=lambda k: _cache[k]["ts"])
+        del _cache[oldest]
 
 
 def _strip_jsonp(text):
     """Strip JSONP wrapper: callback({...}); → {...}"""
-    text = text.strip()
-    if text.startswith("(") and (")" in text):
-        text = text[text.index("(") + 1 : text.rindex(")")]
-    elif re.match(r'^[a-zA-Z_]\w*\(', text):
-        text = text[text.index("(") + 1 : text.rindex(")")]
+    text = text.strip().rstrip(';')
+    # 匹配 callback(...) 格式, 用最外层括号配对
+    m = re.match(r'^[a-zA-Z_]\w*\((.+)\)\s*$', text, re.S)
+    if m:
+        return m.group(1)
+    if text.startswith("(") and text.endswith(")"):
+        return text[1:-1]
     return text
 
 
@@ -80,11 +92,15 @@ def _session() -> requests.Session:
 
 
 def _market_prefix(symbol: str) -> tuple:
-    """返回 (新浪前缀, 东方财富secid)"""
+    """返回 (新浪前缀, 东方财富secid)
+    上海: 6xx/9xx/5xx(沪市ETF/基金)
+    深圳: 0xx/1xx(深市ETF/LOF)/2xx/3xx
+    北交所: 4xx/8xx
+    """
     s = symbol.strip()
-    if s.startswith(("6", "9")):
+    if s.startswith(("6", "9", "5")):
         return f"sh{s}", f"1.{s}"
-    elif s.startswith(("0", "3", "2")):
+    elif s.startswith(("0", "1", "2", "3")):
         return f"sz{s}", f"0.{s}"
     elif s.startswith("4") or s.startswith("8"):
         return f"bj{s}", f"0.{s}"

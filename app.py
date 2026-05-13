@@ -1638,6 +1638,7 @@ function getSignalParams() {
   return `&fast_length=${g('p-fast')}&slow_length=${g('p-slow')}&signal_length=${g('p-signal')}&rsi_length=${g('p-rsi')}&bb_length=${g('p-bb')}&bb_mult=${g('p-bbmult')}&volume_length=${g('p-vol')}&atr_length=${g('p-atr')}&price_mode=${currentPriceMode}`;
 }
 function g(id) { return document.getElementById(id).value; }
+function gf(id, fallback) { const v = parseFloat(g(id)); return isNaN(v) ? (fallback||0) : v; }
 
 // ---- Charts ----
 function initCharts() {
@@ -1845,9 +1846,9 @@ async function doBacktest() {
     const url = `/api/backtest?symbol=${currentSymbol}&start=${start}&end=${end}` +
       `&strategy=${g('bt-strategy')}` +
       `&initial_capital=${g('bt-capital')}&commission=${g('bt-commission')}&stamp_tax=${g('bt-tax')}` +
-      `&slippage_bps=${g('bt-slippage')}&min_commission=${g('bt-min-comm')}&max_drawdown_limit=${parseFloat(g('bt-dd-limit'))/100}&oos_split=${parseFloat(g('bt-oos'))/100}` +
-      `&stop_loss_pct=${parseFloat(g('bt-sl'))/100}&take_profit_pct=${parseFloat(g('bt-tp'))/100}&trailing_stop_pct=${parseFloat(g('bt-tsl'))/100}&atr_stop_mult=${g('bt-atrsl')}` +
-      `&position_mode=${g('bt-pos-mode')}&position_pct=${parseFloat(g('bt-pos-pct'))/100}` +
+      `&slippage_bps=${g('bt-slippage')}&min_commission=${g('bt-min-comm')}&max_drawdown_limit=${gf('bt-dd-limit')/100}&oos_split=${gf('bt-oos')/100}` +
+      `&stop_loss_pct=${gf('bt-sl')/100}&take_profit_pct=${gf('bt-tp')/100}&trailing_stop_pct=${gf('bt-tsl')/100}&atr_stop_mult=${g('bt-atrsl')}` +
+      `&position_mode=${g('bt-pos-mode')}&position_pct=${gf('bt-pos-pct')/100}` +
       getSignalParams();
     const resp = await fetch(url);
     const data = await resp.json();
@@ -2151,9 +2152,9 @@ async function doCompare() {
   try {
     const url = `/api/backtest/compare?symbol=${currentSymbol}&start=${start}&end=${end}&strategies=${selected.join(',')}` +
       `&initial_capital=${g('bt-capital')}&commission=${g('bt-commission')}&stamp_tax=${g('bt-tax')}` +
-      `&slippage_bps=${g('bt-slippage')}&min_commission=${g('bt-min-comm')}&max_drawdown_limit=${parseFloat(g('bt-dd-limit'))/100}` +
-      `&stop_loss_pct=${parseFloat(g('bt-sl'))/100}&take_profit_pct=${parseFloat(g('bt-tp'))/100}&trailing_stop_pct=${parseFloat(g('bt-tsl'))/100}&atr_stop_mult=${g('bt-atrsl')}` +
-      `&position_mode=${g('bt-pos-mode')}&position_pct=${parseFloat(g('bt-pos-pct'))/100}` +
+      `&slippage_bps=${g('bt-slippage')}&min_commission=${g('bt-min-comm')}&max_drawdown_limit=${gf('bt-dd-limit')/100}` +
+      `&stop_loss_pct=${gf('bt-sl')/100}&take_profit_pct=${gf('bt-tp')/100}&trailing_stop_pct=${gf('bt-tsl')/100}&atr_stop_mult=${g('bt-atrsl')}` +
+      `&position_mode=${g('bt-pos-mode')}&position_pct=${gf('bt-pos-pct')/100}` +
       getSignalParams();
     const resp = await fetch(url);
     const data = await resp.json();
@@ -2246,9 +2247,9 @@ async function doWalkForward() {
     const url = `/api/backtest/walkforward?symbol=${currentSymbol}&start=${start}&end=${end}` +
       `&strategy=${g('bt-strategy')}&n_windows=5&train_ratio=0.7` +
       `&initial_capital=${g('bt-capital')}&commission=${g('bt-commission')}&stamp_tax=${g('bt-tax')}` +
-      `&slippage_bps=${g('bt-slippage')}&min_commission=${g('bt-min-comm')}&max_drawdown_limit=${parseFloat(g('bt-dd-limit'))/100}` +
-      `&stop_loss_pct=${parseFloat(g('bt-sl'))/100}&take_profit_pct=${parseFloat(g('bt-tp'))/100}&trailing_stop_pct=${parseFloat(g('bt-tsl'))/100}&atr_stop_mult=${g('bt-atrsl')}` +
-      `&position_mode=${g('bt-pos-mode')}&position_pct=${parseFloat(g('bt-pos-pct'))/100}` +
+      `&slippage_bps=${g('bt-slippage')}&min_commission=${g('bt-min-comm')}&max_drawdown_limit=${gf('bt-dd-limit')/100}` +
+      `&stop_loss_pct=${gf('bt-sl')/100}&take_profit_pct=${gf('bt-tp')/100}&trailing_stop_pct=${gf('bt-tsl')/100}&atr_stop_mult=${g('bt-atrsl')}` +
+      `&position_mode=${g('bt-pos-mode')}&position_pct=${gf('bt-pos-pct')/100}` +
       getSignalParams();
     const resp = await fetch(url);
     const data = await resp.json();
@@ -2347,7 +2348,8 @@ async function doOptimize() {
     }
     if (data.best_params) {
       recHtml += '<div style="margin-top:6px;font-weight:600;">最优参数: ' + JSON.stringify(data.best_params) + '</div>';
-      recHtml += '<button class="btn" style="margin-top:6px;font-size:11px;padding:3px 10px;" onclick=\'applyOptParams(' + JSON.stringify(data.best_params) + ')\'>应用此参数</button>';
+      window._bestOptParams = data.best_params;
+      recHtml += '<button class="btn" style="margin-top:6px;font-size:11px;padding:3px 10px;" onclick="applyOptParams(window._bestOptParams)">应用此参数</button>';
     }
     recHtml += '</div>';
 
@@ -2551,7 +2553,15 @@ function showToast(title, msg, type) {
   toast.className = 'alert-toast';
   const icon = type === 'buy' ? '📈' : '📉';
   const color = type === 'buy' ? 'var(--green)' : 'var(--red)';
-  toast.innerHTML = `<span class="alert-toast-icon">${icon}</span><div class="alert-toast-body"><div class="alert-toast-title" style="color:${color}">${title}</div><div class="alert-toast-msg">${msg}</div></div><button class="alert-toast-close" onclick="this.parentElement.remove()">×</button>`;
+  // 安全构建DOM(防止XSS)
+  const iconEl = document.createElement('span'); iconEl.className = 'alert-toast-icon'; iconEl.textContent = icon;
+  const bodyEl = document.createElement('div'); bodyEl.className = 'alert-toast-body';
+  const titleEl = document.createElement('div'); titleEl.className = 'alert-toast-title'; titleEl.style.color = color; titleEl.textContent = title;
+  const msgEl = document.createElement('div'); msgEl.className = 'alert-toast-msg'; msgEl.textContent = msg;
+  const closeBtn = document.createElement('button'); closeBtn.className = 'alert-toast-close'; closeBtn.textContent = '×';
+  closeBtn.onclick = function() { toast.remove(); };
+  bodyEl.appendChild(titleEl); bodyEl.appendChild(msgEl);
+  toast.appendChild(iconEl); toast.appendChild(bodyEl); toast.appendChild(closeBtn);
   container.appendChild(toast);
   setTimeout(() => { toast.classList.add('fade-out'); setTimeout(() => toast.remove(), 300); }, 5000);
 }

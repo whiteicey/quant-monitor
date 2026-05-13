@@ -64,6 +64,22 @@ def _apply_slippage(price: float, side: str, slippage_bps: float) -> float:
     return price + slip if side == "buy" else price - slip
 
 
+def _calc_trade_pnl(position: int, entry_price: float, exit_price: float,
+                    commission: float, stamp_tax: float, min_commission: float) -> tuple:
+    """
+    计算单笔交易净PnL和净收益率
+    返回: (pnl, return_pct)
+    """
+    gross_pnl = (exit_price - entry_price) * position
+    buy_comm = _calc_commission(position * entry_price, commission, min_commission)
+    sell_comm = _calc_commission(position * exit_price, commission, min_commission)
+    sell_stamp = position * exit_price * stamp_tax
+    pnl = gross_pnl - buy_comm - sell_comm - sell_stamp
+    cost_basis = position * entry_price + buy_comm
+    return_pct = pnl / cost_basis * 100 if cost_basis > 0 else 0
+    return round(pnl, 2), round(return_pct, 2)
+
+
 # ============================================================
 # 策略定义: 每个策略返回 (buy_mask, sell_mask) 两个bool Series
 # ============================================================
@@ -575,13 +591,19 @@ def _run_backtest_core(
 
             elif action_type == "sell" and position > 0:
                 fill_price = _apply_slippage(bar_open, "sell", slippage_bps)
+                # T+1止损排队时可能带有原始止损价
+                if len(pending_action) > 3 and pending_action[3] is not None:
+                    # 用原始止损价 vs 开盘价取更不利的
+                    stop_fill = pending_action[3]
+                    exit_type_hint = pending_action[2]
+                    if exit_type_hint in ("stop_loss", "trailing_stop"):
+                        fill_price = min(stop_fill, bar_open)
+                    else:
+                        fill_price = max(stop_fill, bar_open)
+                    fill_price = _apply_slippage(fill_price, "sell", slippage_bps)
+
                 revenue = _calc_sell_revenue(position, fill_price, commission, stamp_tax, min_commission)
-                # PnL = 价差收益 - 买入佣金 - 卖出佣金 - 卖出印花税
-                gross_pnl = (fill_price - entry_price) * position
-                buy_comm = _calc_commission(position * entry_price, commission, min_commission)
-                sell_comm = _calc_commission(position * fill_price, commission, min_commission)
-                sell_stamp = position * fill_price * stamp_tax
-                pnl = gross_pnl - buy_comm - sell_comm - sell_stamp
+                pnl, return_pct = _calc_trade_pnl(position, entry_price, fill_price, commission, stamp_tax, min_commission)
 
                 capital += revenue
                 exit_type = pending_action[2] if len(pending_action) > 2 else "signal"
@@ -591,8 +613,8 @@ def _run_backtest_core(
                     "entry_price": round(entry_price, 2),
                     "exit_price": round(fill_price, 2),
                     "shares": position,
-                    "pnl": round(pnl, 2),
-                    "return_pct": round(pnl / (position * entry_price + buy_comm) * 100, 2),
+                    "pnl": pnl,
+                    "return_pct": return_pct,
                     "exit_type": exit_type,
                 })
                 position = 0
@@ -632,11 +654,7 @@ def _run_backtest_core(
                 if i > entry_bar_idx:
                     fill_price = _apply_slippage(stop_fill_price, "sell", slippage_bps)
                     revenue = _calc_sell_revenue(position, fill_price, commission, stamp_tax, min_commission)
-                    gross_pnl = (fill_price - entry_price) * position
-                    buy_comm = _calc_commission(position * entry_price, commission, min_commission)
-                    sell_comm = _calc_commission(position * fill_price, commission, min_commission)
-                    sell_stamp = position * fill_price * stamp_tax
-                    pnl = gross_pnl - buy_comm - sell_comm - sell_stamp
+                    pnl, return_pct = _calc_trade_pnl(position, entry_price, fill_price, commission, stamp_tax, min_commission)
 
                     capital += revenue
                     trades.append({
@@ -645,8 +663,8 @@ def _run_backtest_core(
                         "entry_price": round(entry_price, 2),
                         "exit_price": round(fill_price, 2),
                         "shares": position,
-                        "pnl": round(pnl, 2),
-                        "return_pct": round(pnl / (position * entry_price + buy_comm) * 100, 2),
+                        "pnl": pnl,
+                        "return_pct": return_pct,
                         "exit_type": stop_type,
                     })
                     position = 0
@@ -654,8 +672,8 @@ def _run_backtest_core(
                     # 更新权益曲线(止损后position=0, capital已更新)
                     eq_curve[-1] = capital
                 else:
-                    # T+1阻止: 排队到下一bar以信号卖出方式执行
-                    pending_action = ("sell", i, stop_type)
+                    # T+1阻止: 排队到下一bar, 保留原始止损价
+                    pending_action = ("sell", i, stop_type, stop_fill_price)
                 continue  # 止损优先, 不看其他信号
 
         if is_buy and position == 0 and not breaker_active:
@@ -670,10 +688,11 @@ def _run_backtest_core(
     if position > 0:
         final_price = signals_df.iloc[-1]["close"]
         final_date = signals_df.index[-1]
-        market_value = position * final_price
         gross_pnl = (final_price - entry_price) * position
         buy_comm = _calc_commission(position * entry_price, commission, min_commission)
         pnl = gross_pnl - buy_comm  # 未卖出不扣卖出费用
+        cost_basis = position * entry_price + buy_comm
+        return_pct = round(pnl / cost_basis * 100, 2) if cost_basis > 0 else 0
 
         trades.append({
             "buy_date": str(entry_date.date()) if hasattr(entry_date, 'date') else str(entry_date)[:10],
@@ -682,7 +701,7 @@ def _run_backtest_core(
             "exit_price": round(final_price, 2),
             "shares": position,
             "pnl": round(pnl, 2),
-            "return_pct": round((final_price / entry_price - 1) * 100, 2),
+            "return_pct": return_pct,
             "exit_type": "holding",
         })
         # eq_curve最后一个值已经包含了position * close

@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from typing import List, Dict, Optional
 from .data import fetch_stock_daily
 from .allocation import compute_weights, ALLOCATION_STRATEGIES
-from .backtest import _calc_commission, _calc_sell_revenue, _calc_buy_cost
 
 
 # ============================================================
@@ -162,13 +161,18 @@ def portfolio_backtest(
     total_turnover = 0.0
     n_rebalances = 0
 
-    # 债券/货币ETF免印花税
+    # A股印花税豁免: ETF/基金全部免征, 仅个股征收
+    # 识别逻辑: sub_category 为 dividend_stock 的是个股, 其余全部免征
     from .presets import ASSET_LIBRARY
     stamp_exempt = set()
     for j, sym in enumerate(symbols):
         a = ASSET_LIBRARY.get(sym)
-        if a and a.category in ("bond", "cash"):
+        if a and a.sub_category != "dividend_stock":
             stamp_exempt.add(j)
+        elif not a:
+            # 未知资产: 按代码前缀判断(5/1/51开头=基金/ETF, 免征)
+            if sym.startswith(("5", "1")):
+                stamp_exempt.add(j)
 
     for i in range(n_days):
         date = prices.index[i]
