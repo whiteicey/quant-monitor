@@ -108,8 +108,8 @@ def returns_ttest(
         "t_stat": round(float(t_stat), 4),
         "p_value": round(float(p_value), 6),
         "p_value_one": round(float(p_value_one), 6),
-        "is_significant_5pct": p_value < 0.05,
-        "is_significant_1pct": p_value < 0.01,
+        "is_significant_5pct": bool(p_value < 0.05),
+        "is_significant_1pct": bool(p_value < 0.01),
     }
 
 
