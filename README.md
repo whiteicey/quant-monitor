@@ -358,6 +358,8 @@ quant-monitor/
     ├── portfolio.py    # 多资产组合回测引擎
     ├── allocation.py   # 配置策略（等权/动量/风险平价/均值方差/自适应）
     ├── presets.py      # 预设资产池+智能推荐
+    ├── optimizer.py    # 参数优化（网格搜索+WF交叉验证+过拟合检测）
+    ├── statistics.py   # 统计检验（Sharpe CI/t检验/多重比较校正）
     ├── visualize.py    # matplotlib 图表生成
     └── extensions.py   # TODO预留接口（信号提醒/止盈止损/仓位管理/KDJ+OBV+VWAP/多周期共振）
 ```
@@ -443,11 +445,15 @@ pyinstaller --onefile --name "A股信号监控" --add-data "src;src" --hidden-im
 - [x] 独立[资产配置]前端页面
 - [x] 债券/货币ETF印花税豁免
 
-### Phase 2b: 策略研究平台
+### Phase 2b: 参数优化 + 统计检验 ✅ v2.1
 
-- [ ] 因子模型：单因子IC/IR分析、因子分位回测
-- [ ] 统计框架：Sharpe置信区间、收益t检验、多重比较校正
-- [ ] 参数优化：网格搜索+交叉验证、过拟合检测
+- [x] 网格搜索（144组参数自动遍历，约15-30秒）
+- [x] Walk-Forward交叉验证（真正的样本外验证，IS/OOS严格分离）
+- [x] Sharpe置信区间（Lo 2002公式，判断收益是否显著）
+- [x] 收益t检验（策略alpha是否统计显著）
+- [x] 多重比较校正（BHY方法，校正169种组合的多重检验偏差）
+- [x] 过拟合检测（OOS失效率，top参数样本外表现）
+- [x] 前端[参数优化]按钮 + 结果展示 + 一键应用最优参数
 
 ### Phase 3: 迈向实盘
 

@@ -719,6 +719,60 @@ def api_portfolio_backtest():
 
 
 # ---------------------------------------------------------------------------
+# Parameter Optimization API
+# ---------------------------------------------------------------------------
+
+@app.route("/api/optimize")
+def api_optimize():
+    symbol = request.args.get("symbol", "").strip()
+    if not symbol:
+        return jsonify({"error": "缺少股票代码"}), 400
+
+    start = request.args.get("start", "20240101").strip()
+    end = request.args.get("end", "").strip()
+    strategy = request.args.get("strategy", "macd_rsi").strip()
+
+    try:
+        initial_capital = float(request.args.get("initial_capital", "1000000"))
+        commission = float(request.args.get("commission", "0.00025"))
+        stamp_tax = float(request.args.get("stamp_tax", "0.0005"))
+        slippage_bps = float(request.args.get("slippage_bps", "0"))
+        min_commission = float(request.args.get("min_commission", "5"))
+    except (ValueError, TypeError):
+        initial_capital = 1000000.0
+        commission, stamp_tax, slippage_bps, min_commission = 0.00025, 0.0005, 0.0, 5.0
+
+    try:
+        df = fetch_stock_daily(symbol, start, end)
+    except Exception as e:
+        return jsonify({"error": f"数据获取失败: {e}"}), 400
+
+    try:
+        from src.optimizer import grid_search_optimize
+        result = grid_search_optimize(
+            df, strategy=strategy,
+            initial_capital=initial_capital, commission=commission,
+            stamp_tax=stamp_tax, slippage_bps=slippage_bps,
+            min_commission=min_commission)
+    except Exception as e:
+        return jsonify({"error": f"参数优化失败: {e}"}), 500
+
+    return jsonify({
+        "strategy": result.strategy,
+        "total_combos": result.total_combos,
+        "results": result.results,
+        "best_params": result.best_params,
+        "best_is_return": result.best_is_return,
+        "best_oos_return": result.best_oos_return,
+        "pbo": result.pbo,
+        "sharpe_ci": result.sharpe_ci,
+        "ttest": result.ttest,
+        "multi_compare": result.multi_compare,
+        "recommendation": result.recommendation,
+    })
+
+
+# ---------------------------------------------------------------------------
 # HTML
 # ---------------------------------------------------------------------------
 
@@ -1036,6 +1090,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <button class="btn btn-warn" onclick="doBacktest()">回测</button>
   <button class="btn" style="background:var(--purple);color:#fff;" onclick="showCompareModal()">策略对比</button>
   <button class="btn" style="background:#e67e22;color:#fff;font-size:12px;" onclick="doWalkForward()">Walk-Forward</button>
+  <button class="btn" style="background:#8e44ad;color:#fff;font-size:12px;" onclick="doOptimize()">参数优化</button>
 
   <span class="stock-name" id="stock-name"></span>
   <span id="realtime-price" style="font-family:'JetBrains Mono',monospace;font-size:20px;font-weight:700;margin-left:8px;"></span>
@@ -2241,6 +2296,92 @@ async function doWalkForward() {
 
     panel.scrollIntoView({behavior:'smooth'});
   } catch(e) { alert('Walk-Forward失败: '+e.message); } finally { hideSpinner(); }
+}
+
+// ---- Parameter Optimization ----
+async function doOptimize() {
+  if (!currentSymbol) { alert('请选择或输入股票'); return; }
+  const start = getStartDate();
+  const end = getEndDate();
+
+  if (!confirm('参数优化将遍历约100+参数组合并做Walk-Forward验证，预计需要30-60秒。是否继续？')) return;
+
+  showSpinner();
+  try {
+    const url = `/api/optimize?symbol=${currentSymbol}&start=${start}&end=${end}` +
+      `&strategy=${g('bt-strategy')}` +
+      `&initial_capital=${g('bt-capital')}&commission=${g('bt-commission')}&stamp_tax=${g('bt-tax')}` +
+      `&slippage_bps=${g('bt-slippage')}&min_commission=${g('bt-min-comm')}`;
+    const resp = await fetch(url);
+    const data = await resp.json();
+    if (data.error) { alert(data.error); hideSpinner(); return; }
+
+    const panel = document.getElementById('backtest-panel');
+    panel.style.display = 'block';
+    document.getElementById('equity-box').style.display = 'none';
+    document.getElementById('compare-box').style.display = 'none';
+    document.getElementById('bt-strategy-label').textContent = '— 参数优化结果';
+
+    // 统计指标
+    const ci = data.sharpe_ci || {};
+    const tt = data.ttest || {};
+    const mc = data.multi_compare || {};
+    const items = [
+      {lbl:'搜索组合数', val:data.total_combos, cls:''},
+      {lbl:'最优IS收益', val:data.best_is_return+'%', cls:data.best_is_return>=0?'val-green':'val-red'},
+      {lbl:'最优OOS收益', val:data.best_oos_return+'%', cls:data.best_oos_return>=0?'val-green':'val-red'},
+      {lbl:'过拟合概率', val:(data.pbo*100).toFixed(0)+'%', cls:data.pbo<0.3?'val-green':data.pbo<0.6?'':'val-red'},
+      {lbl:'Sharpe', val:ci.sharpe||0, cls:ci.is_significant?'val-green':''},
+      {lbl:'Sharpe 95%CI', val:(ci.ci_lower||0)+'~'+(ci.ci_upper||0), cls:ci.is_significant?'val-green':'val-red'},
+      {lbl:'t检验p值', val:tt.p_value||'-', cls:tt.is_significant_5pct?'val-green':'val-red'},
+      {lbl:'校正后显著', val:(mc.n_significant||0)+'/'+(mc.n_total||0), cls:''},
+    ];
+    document.getElementById('bt-grid').innerHTML = items.map(i=>`<div class="bt-cell"><div class="bt-val ${i.cls}">${i.val}</div><div class="bt-lbl">${i.lbl}</div></div>`).join('');
+
+    // 推荐文字
+    let recHtml = '<div style="margin:10px 0;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;font-size:12px;line-height:1.6;">';
+    if (data.recommendation) {
+      data.recommendation.split('; ').forEach(s => {
+        recHtml += '<div>' + s + '</div>';
+      });
+    }
+    if (data.best_params) {
+      recHtml += '<div style="margin-top:6px;font-weight:600;">最优参数: ' + JSON.stringify(data.best_params) + '</div>';
+      recHtml += '<button class="btn" style="margin-top:6px;font-size:11px;padding:3px 10px;" onclick=\'applyOptParams(' + JSON.stringify(data.best_params) + ')\'>应用此参数</button>';
+    }
+    recHtml += '</div>';
+
+    // Top-N结果表
+    const table = document.getElementById('bt-trades');
+    let html = recHtml;
+    html += '<table class="bt-table" style="width:100%;font-size:12px;"><thead><tr><th>#</th><th>参数</th><th>IS收益</th><th>IS Sharpe</th><th>OOS收益</th><th>WF一致性</th></tr></thead><tbody>';
+    (data.results||[]).forEach((r, idx) => {
+      const isCls = r.is_return>=0?'val-green':'val-red';
+      const oosCls = r.oos_return>=0?'val-green':'val-red';
+      const wfCls = r.wf_consistency>=60?'val-green':r.wf_consistency>=40?'':'val-red';
+      const pStr = `F${r.params.fast_length}/S${r.params.slow_length}/Sig${r.params.signal_length}/RSI${r.params.rsi_length}`;
+      html += `<tr${idx===0?' style="background:rgba(255,215,0,0.1);"':''}>
+        <td>${idx+1}</td>
+        <td style="font-size:11px;">${pStr}</td>
+        <td class="${isCls}">${r.is_return}%</td>
+        <td>${r.is_sharpe}</td>
+        <td class="${oosCls}">${r.oos_return}%</td>
+        <td class="${wfCls}">${r.wf_consistency}%</td>
+      </tr>`;
+    });
+    html += '</tbody></table>';
+    table.innerHTML = html;
+
+    panel.scrollIntoView({behavior:'smooth'});
+  } catch(e) { alert('参数优化失败: '+e.message); } finally { hideSpinner(); }
+}
+
+function applyOptParams(params) {
+  if (params.fast_length) document.getElementById('p-fast').value = params.fast_length;
+  if (params.slow_length) document.getElementById('p-slow').value = params.slow_length;
+  if (params.signal_length) document.getElementById('p-signal').value = params.signal_length;
+  if (params.rsi_length) document.getElementById('p-rsi').value = params.rsi_length;
+  alert('参数已应用！点击"回测"按钮查看效果。');
 }
 
 // ---- Theme ----
