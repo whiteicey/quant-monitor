@@ -420,6 +420,7 @@ def backtest(
 
     # ---- 样本外测试: 只在训练集上跑, 测试集单独跑 ----
     oos_result = None
+    full_signals_df = signals_df  # 保留完整数据用于基准曲线
     if oos_split > 0:
         split_idx = int(len(signals_df) * (1 - oos_split))
         if split_idx > 50 and split_idx < len(signals_df) - 10:
@@ -444,8 +445,8 @@ def backtest(
         commission, stamp_tax, min_commission, slippage_bps,
         max_drawdown_limit, stop_config, position_config)
 
-    # ---- 基准曲线: 买入持有 ----
-    benchmark_curve = _calc_benchmark_curve(signals_df, initial_capital)
+    # ---- 基准曲线: 买入持有(覆盖完整时间段) ----
+    benchmark_curve = _calc_benchmark_curve(full_signals_df, initial_capital)
 
     # ---- 组装结果 ----
     trades = result["trades"]
@@ -831,8 +832,6 @@ def walk_forward_backtest(
         train_start = max(0, test_start - int(test_size * train_ratio / (1 - train_ratio)))
         
         if train_start >= test_start or test_start < min_train_bars:
-            continue
-        if test_end > n:
             continue
             
         train_signals = signals_df.iloc[train_start:test_start]

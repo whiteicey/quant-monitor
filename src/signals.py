@@ -4,6 +4,7 @@
 """
 import pandas as pd
 import numpy as np
+import numpy as np
 from dataclasses import dataclass
 from . import indicators as ind
 
@@ -234,7 +235,7 @@ def get_latest_signal(df: pd.DataFrame) -> SignalResult:
 
     def _safe(val, ndigits=2):
         v = float(val)
-        if pd.isna(v):
+        if pd.isna(v) or not np.isfinite(v):
             return 0.0
         return round(v, ndigits)
 

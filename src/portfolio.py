@@ -237,11 +237,17 @@ def portfolio_backtest(
                 stamp = trade_amount * stamp_tax if (delta[j] < 0 and j not in stamp_exempt) else 0
                 total_cost += comm + slip + stamp
 
-            # 调仓后持仓(扣成本)
-            holdings = target_values
-            if portfolio_value > total_cost:
-                cost_ratio = (portfolio_value - total_cost) / portfolio_value
-                holdings = holdings * cost_ratio
+            # 调仓后持仓(成本仅从交易部分扣除)
+            holdings = target_values.copy()
+            if total_cost > 0 and portfolio_value > total_cost:
+                # 从有交易的资产中按交易金额比例分摊成本
+                abs_delta = np.abs(delta)
+                trade_total = abs_delta.sum()
+                if trade_total > 0:
+                    for j in range(n_assets):
+                        if abs_delta[j] > 1:
+                            cost_share = total_cost * (abs_delta[j] / trade_total)
+                            holdings[j] -= cost_share
             holdings = np.maximum(holdings, 0)
             n_rebalances += 1
 

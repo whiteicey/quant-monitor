@@ -231,7 +231,7 @@ def api_analyze():
 
     try:
         name = fetch_stock_info(symbol)
-    except:
+    except Exception:
         name = symbol
 
     try:
@@ -602,8 +602,11 @@ def api_backtest_walkforward():
     start = request.args.get("start", "20240101").strip()
     end = request.args.get("end", "").strip()
     strategy = request.args.get("strategy", "macd_rsi").strip()
-    n_windows = int(request.args.get("n_windows", "5"))
-    train_ratio = float(request.args.get("train_ratio", "0.7"))
+    try:
+        n_windows = int(request.args.get("n_windows", "5"))
+        train_ratio = float(request.args.get("train_ratio", "0.7"))
+    except (ValueError, TypeError):
+        n_windows, train_ratio = 5, 0.7
 
     p = _parse_signal_params()
     initial_capital, commission, stamp_tax, slippage_bps, min_commission, max_drawdown_limit, _ = _parse_capital_params()
@@ -1757,6 +1760,7 @@ async function doAnalyze() {
   // 确保详情视图可见（图表需要可见容器才能正确计算尺寸）
   if (currentView !== 'detail') {
     document.getElementById('view-watchlist').style.display = 'none';
+    document.getElementById('view-portfolio').style.display = 'none';
     document.getElementById('view-detail').style.display = 'flex';
     currentView = 'detail';
     document.querySelectorAll('.view-tab').forEach(t => t.classList.remove('active'));
@@ -2153,6 +2157,7 @@ async function doCompare() {
     const url = `/api/backtest/compare?symbol=${currentSymbol}&start=${start}&end=${end}&strategies=${selected.join(',')}` +
       `&initial_capital=${g('bt-capital')}&commission=${g('bt-commission')}&stamp_tax=${g('bt-tax')}` +
       `&slippage_bps=${g('bt-slippage')}&min_commission=${g('bt-min-comm')}&max_drawdown_limit=${gf('bt-dd-limit')/100}` +
+      `&oos_split=${gf('bt-oos')/100}` +
       `&stop_loss_pct=${gf('bt-sl')/100}&take_profit_pct=${gf('bt-tp')/100}&trailing_stop_pct=${gf('bt-tsl')/100}&atr_stop_mult=${g('bt-atrsl')}` +
       `&position_mode=${g('bt-pos-mode')}&position_pct=${gf('bt-pos-pct')/100}` +
       getSignalParams();
@@ -2871,8 +2876,8 @@ function pfApplyRecommend(strategy, rebalance) {
 async function pfRunBacktest() {
   if (pfSelectedSymbols.length < 2) { alert('至少需要2个资产'); return; }
   showSpinner();
-  const start = document.getElementById('inp-start').value.replace(/-/g, '');
-  const end = document.getElementById('inp-end').value.replace(/-/g, '');
+  const start = getStartDate();
+  const end = getEndDate();
   const url = '/api/portfolio/backtest?symbols=' + pfSelectedSymbols.join(',') +
     '&start=' + start + '&end=' + end +
     '&strategy=' + document.getElementById('pf-strategy').value +
