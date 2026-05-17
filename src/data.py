@@ -83,26 +83,49 @@ def _strip_jsonp(text):
 _sess = None
 
 def _session() -> requests.Session:
+    """
+    创建网络会话(单例)
+    智能代理探测: 启动时自动判断是走系统代理还是直连
+    - 企业网络(有代理): trust_env=True, 走系统代理
+    - 家庭网络/Clash关闭: trust_env=False, 直连
+    """
     global _sess
     if _sess is None:
-        _sess = requests.Session()
-        _sess.trust_env = False
-        _sess.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
-        # 强制IPv4: 部分网络环境IPv6不通导致连接超时
-        import urllib3
-        import socket
-        class IPv4HTTPAdapter(requests.adapters.HTTPAdapter):
-            def init_poolmanager(self, *args, **kwargs):
-                kwargs["socket_options"] = [(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)]
-                # 强制使用AF_INET(IPv4)
-                import urllib3.util.connection
-                urllib3.util.connection.HAS_IPV6 = False
-                super().init_poolmanager(*args, **kwargs)
-        adapter = IPv4HTTPAdapter(max_retries=urllib3.Retry(total=2, backoff_factor=0.5,
-                                                            status_forcelist=[500, 502, 503, 504]))
-        _sess.mount("https://", adapter)
-        _sess.mount("http://", adapter)
+        _sess = _create_session()
     return _sess
+
+
+def _create_session() -> requests.Session:
+    """探测网络环境并创建最优session"""
+    test_url = "https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=1&fid=f3&fs=m:1+t:2&fields=f12"
+
+    # 方案1: 走系统代理
+    s1 = requests.Session()
+    s1.trust_env = True
+    s1.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
+    try:
+        r = s1.get(test_url, timeout=3)
+        if r.status_code == 200:
+            print("  [网络] 使用系统代理")
+            return s1
+    except Exception:
+        pass
+
+    # 方案2: 直连(绕过代理)
+    s2 = requests.Session()
+    s2.trust_env = False
+    s2.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
+    try:
+        r = s2.get(test_url, timeout=3)
+        if r.status_code == 200:
+            print("  [网络] 使用直连(无代理)")
+            return s2
+    except Exception:
+        pass
+
+    # 都失败: 默认走系统代理(至少不改变系统行为)
+    print("  [网络] 代理和直连均超时, 默认使用系统代理")
+    return s1
 
 
 def _market_prefix(symbol: str) -> tuple:
