@@ -417,7 +417,9 @@ def api_watchlist_realtime():
     try:
         quotes = fetch_realtime_quotes_batch(symbols)
     except Exception as e:
-        return jsonify({"error": f"行情获取失败: {e}"}), 400
+        # 网络失败时返回空行情而非400错误，前端可显示上次数据
+        print(f"  错误: 实时行情获取失败: {e}")
+        return jsonify([])
     
     # Signal calculation with cache
     now = _time.time()

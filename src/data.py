@@ -88,6 +88,20 @@ def _session() -> requests.Session:
         _sess = requests.Session()
         _sess.trust_env = False
         _sess.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
+        # 强制IPv4: 部分网络环境IPv6不通导致连接超时
+        import urllib3
+        import socket
+        class IPv4HTTPAdapter(requests.adapters.HTTPAdapter):
+            def init_poolmanager(self, *args, **kwargs):
+                kwargs["socket_options"] = [(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)]
+                # 强制使用AF_INET(IPv4)
+                import urllib3.util.connection
+                urllib3.util.connection.HAS_IPV6 = False
+                super().init_poolmanager(*args, **kwargs)
+        adapter = IPv4HTTPAdapter(max_retries=urllib3.Retry(total=2, backoff_factor=0.5,
+                                                            status_forcelist=[500, 502, 503, 504]))
+        _sess.mount("https://", adapter)
+        _sess.mount("http://", adapter)
     return _sess
 
 
