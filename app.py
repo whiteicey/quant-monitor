@@ -2021,24 +2021,29 @@ async function fetchRealtime() {
     if (lb.vwap && lb.vwap.value != null) vwapSeries.update(lb.vwap);
 
     // K线交易信号实时标记(强买/强卖/买入/卖出)
-    if (lb.candle && (lb.strong_buy || lb.strong_sell || lb.weak_buy || lb.weak_sell)) {
+    if (lb.candle) {
       const kTime = lb.candle.time;
       const kArr = window._klineMarkers || [];
-      // 先移除同一time的旧标记(信号可能在盘中变化)
-      const filtered = kArr.filter(x => x.time !== kTime);
-      if (lb.strong_buy) {
-        filtered.push({time: kTime, position:'belowBar', color:'#FFD700', shape:'arrowUp', text:'强买'});
-      } else if (lb.weak_buy) {
-        filtered.push({time: kTime, position:'belowBar', color:'#ef5350', shape:'circle', text:'买'});
+      const hasSignal = lb.strong_buy || lb.strong_sell || lb.weak_buy || lb.weak_sell;
+      const hasOldMarker = kArr.some(x => x.time === kTime);
+      if (hasSignal || hasOldMarker) {
+        // 先移除同一time的旧标记(信号可能在盘中变化或消失)
+        const filtered = kArr.filter(x => x.time !== kTime);
+        // strong_buy包含weak_buy(bull_score>=5意味着>=4), 用else if避免重复
+        if (lb.strong_buy) {
+          filtered.push({time: kTime, position:'belowBar', color:'#FFD700', shape:'arrowUp', text:'强买'});
+        } else if (lb.weak_buy) {
+          filtered.push({time: kTime, position:'belowBar', color:'#ef5350', shape:'circle', text:'买'});
+        }
+        if (lb.strong_sell) {
+          filtered.push({time: kTime, position:'aboveBar', color:'#FF4444', shape:'arrowDown', text:'强卖'});
+        } else if (lb.weak_sell) {
+          filtered.push({time: kTime, position:'aboveBar', color:'#26a69a', shape:'circle', text:'卖'});
+        }
+        filtered.sort((a,b) => a.time - b.time);
+        window._klineMarkers = filtered;
+        candleSeries.setMarkers(filtered);
       }
-      if (lb.strong_sell) {
-        filtered.push({time: kTime, position:'aboveBar', color:'#FF4444', shape:'arrowDown', text:'强卖'});
-      } else if (lb.weak_sell) {
-        filtered.push({time: kTime, position:'aboveBar', color:'#26a69a', shape:'circle', text:'卖'});
-      }
-      filtered.sort((a,b) => a.time - b.time);
-      window._klineMarkers = filtered;
-      candleSeries.setMarkers(filtered);
     }
 
     // 更新信号面板
