@@ -256,6 +256,7 @@ def api_analyze():
     fast_ema, slow_ema, bb_upper, bb_basis, bb_lower = [], [], [], [], []
     macd_line, signal_line, macd_hist, rsi_arr = [], [], [], []
     sbuy_m, ssell_m, wbuy_m, wsell_m = [], [], [], []
+    macd_golden_m, macd_death_m = [], []
     kdj_k_arr, kdj_d_arr, kdj_j_arr, obv_arr, obv_ma_arr, vwap_arr = [], [], [], [], [], []
 
     for i in range(len(sig_df)):
@@ -302,6 +303,13 @@ def api_analyze():
         if row.get("weak_sell", False) == True and not row.get("strong_sell", False) == True:
             wsell_m.append({"time": ts, "position": "aboveBar", "color": "#26a69a", "shape": "circle", "text": "卖"})
 
+        # MACD金叉死叉标记(在MACD图表上显示)
+        macd_val = _v("macd_line")
+        if row.get("macd_golden_cross", False) == True and macd_val is not None:
+            macd_golden_m.append({"time": ts, "position": "belowBar", "color": "#ef5350", "shape": "arrowUp", "text": "金叉"})
+        if row.get("macd_death_cross", False) == True and macd_val is not None:
+            macd_death_m.append({"time": ts, "position": "aboveBar", "color": "#26a69a", "shape": "arrowDown", "text": "死叉"})
+
     return jsonify({
         "name": name, "symbol": symbol, "period": period,
         "signal": asdict(signal),
@@ -315,6 +323,7 @@ def api_analyze():
             "obv": obv_arr, "obv_ma": obv_ma_arr, "vwap": vwap_arr,
             "strong_buy_markers": sbuy_m, "strong_sell_markers": ssell_m,
             "weak_buy_markers": wbuy_m, "weak_sell_markers": wsell_m,
+            "macd_golden_markers": macd_golden_m, "macd_death_markers": macd_death_m,
         },
     })
 
@@ -1796,6 +1805,10 @@ async function doAnalyze() {
     macdHistSeries.setData(c.macd_hist);
     macdLineSeries.setData(c.macd_line);
     macdSignalSeries.setData(c.signal_line);
+
+    // MACD金叉死叉标记
+    const macdMarkers = [...(c.macd_golden_markers||[]),...(c.macd_death_markers||[])].sort((a,b)=>a.time-b.time);
+    if (macdMarkers.length > 0) macdLineSeries.setMarkers(macdMarkers);
 
     rsiSeries.setData(c.rsi);
     if (c.rsi.length > 1) {
