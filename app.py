@@ -212,6 +212,10 @@ def api_realtime():
         "vwap": {"time": ts, "value": _v("vwap")},
         "macd_golden_cross": bool(last_row.get("macd_golden_cross", False)),
         "macd_death_cross": bool(last_row.get("macd_death_cross", False)),
+        "strong_buy": bool(last_row.get("strong_buy", False)),
+        "strong_sell": bool(last_row.get("strong_sell", False)),
+        "weak_buy": bool(last_row.get("weak_buy", False)),
+        "weak_sell": bool(last_row.get("weak_sell", False)),
     }
 
     return jsonify({
@@ -1802,6 +1806,7 @@ async function doAnalyze() {
     bbLowerSeries.setData(c.bb_lower);
 
     const markers = [...c.strong_buy_markers,...c.strong_sell_markers,...c.weak_buy_markers,...c.weak_sell_markers].sort((a,b)=>a.time-b.time);
+    window._klineMarkers = markers;
     candleSeries.setMarkers(markers);
 
     macdHistSeries.setData(c.macd_hist);
@@ -2014,6 +2019,27 @@ async function fetchRealtime() {
     if (lb.obv && lb.obv.value != null) obvSeries.update(lb.obv);
     if (lb.obv_ma && lb.obv_ma.value != null) obvMaSeries.update(lb.obv_ma);
     if (lb.vwap && lb.vwap.value != null) vwapSeries.update(lb.vwap);
+
+    // K线交易信号实时标记(强买/强卖/买入/卖出)
+    if (lb.candle && (lb.strong_buy || lb.strong_sell || lb.weak_buy || lb.weak_sell)) {
+      const kTime = lb.candle.time;
+      const kArr = window._klineMarkers || [];
+      // 先移除同一time的旧标记(信号可能在盘中变化)
+      const filtered = kArr.filter(x => x.time !== kTime);
+      if (lb.strong_buy) {
+        filtered.push({time: kTime, position:'belowBar', color:'#FFD700', shape:'arrowUp', text:'强买'});
+      } else if (lb.weak_buy) {
+        filtered.push({time: kTime, position:'belowBar', color:'#ef5350', shape:'circle', text:'买'});
+      }
+      if (lb.strong_sell) {
+        filtered.push({time: kTime, position:'aboveBar', color:'#FF4444', shape:'arrowDown', text:'强卖'});
+      } else if (lb.weak_sell) {
+        filtered.push({time: kTime, position:'aboveBar', color:'#26a69a', shape:'circle', text:'卖'});
+      }
+      filtered.sort((a,b) => a.time - b.time);
+      window._klineMarkers = filtered;
+      candleSeries.setMarkers(filtered);
+    }
 
     // 更新信号面板
     const s = data.signal;
