@@ -210,6 +210,8 @@ def api_realtime():
         "obv": {"time": ts, "value": _v("obv")},
         "obv_ma": {"time": ts, "value": _v("obv_ma")},
         "vwap": {"time": ts, "value": _v("vwap")},
+        "macd_golden_cross": bool(last_row.get("macd_golden_cross", False)),
+        "macd_death_cross": bool(last_row.get("macd_death_cross", False)),
     }
 
     return jsonify({
@@ -1807,8 +1809,8 @@ async function doAnalyze() {
     macdSignalSeries.setData(c.signal_line);
 
     // MACD金叉死叉标记
-    const macdMarkers = [...(c.macd_golden_markers||[]),...(c.macd_death_markers||[])].sort((a,b)=>a.time-b.time);
-    if (macdMarkers.length > 0) macdLineSeries.setMarkers(macdMarkers);
+    window._macdCrossMarkers = [...(c.macd_golden_markers||[]),...(c.macd_death_markers||[])].sort((a,b)=>a.time-b.time);
+    if (window._macdCrossMarkers.length > 0) macdLineSeries.setMarkers(window._macdCrossMarkers);
 
     rsiSeries.setData(c.rsi);
     if (c.rsi.length > 1) {
@@ -1989,6 +1991,20 @@ async function fetchRealtime() {
     if (lb.macd_hist && lb.macd_hist.value != null) {
       const mhv = lb.macd_hist.value;
       macdHistSeries.update({time: lb.macd_hist.time, value: mhv, color: mhv >= 0 ? 'rgba(239,83,80,0.8)' : 'rgba(38,166,154,0.8)'});
+    }
+    // MACD金叉死叉实时标记
+    if (lb.macd_line && lb.macd_line.value != null && (lb.macd_golden_cross || lb.macd_death_cross)) {
+      const mTime = lb.macd_line.time;
+      const mArr = window._macdCrossMarkers || [];
+      if (lb.macd_golden_cross && !mArr.some(x => x.time === mTime && x.text === '金叉')) {
+        mArr.push({time: mTime, position:'belowBar', color:'#ef5350', shape:'arrowUp', text:'金叉'});
+      }
+      if (lb.macd_death_cross && !mArr.some(x => x.time === mTime && x.text === '死叉')) {
+        mArr.push({time: mTime, position:'aboveBar', color:'#26a69a', shape:'arrowDown', text:'死叉'});
+      }
+      mArr.sort((a,b) => a.time - b.time);
+      window._macdCrossMarkers = mArr;
+      macdLineSeries.setMarkers(mArr);
     }
     if (lb.rsi && lb.rsi.value != null) rsiSeries.update(lb.rsi);
 
