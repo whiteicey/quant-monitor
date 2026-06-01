@@ -25,8 +25,14 @@ if getattr(sys, 'frozen', False):
     _BASE_DIR = os.path.dirname(sys.executable)
 WATCHLIST_FILE = os.path.join(_BASE_DIR, "watchlist.json")
 
+# Thread locks for shared state
+_watchlist_lock = threading.Lock()
+_signal_cache_lock = threading.Lock()
+_SIGNAL_CACHE_MAX = 200  # max cached symbols
+
 
 def _load_watchlist():
+    """读取自选股列表（调用方需自行持有 _watchlist_lock 或接受竞态）"""
     if os.path.exists(WATCHLIST_FILE):
         try:
             with open(WATCHLIST_FILE, "r", encoding="utf-8") as f:
@@ -37,6 +43,7 @@ def _load_watchlist():
 
 
 def _save_watchlist(data):
+    """保存自选股列表（调用方需自行持有 _watchlist_lock 或接受竞态）"""
     with open(WATCHLIST_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
@@ -380,7 +387,8 @@ def api_sector():
 
 @app.route("/api/watchlist")
 def api_watchlist_get():
-    return jsonify(_load_watchlist())
+    with _watchlist_lock:
+        return jsonify(_load_watchlist())
 
 
 @app.route("/api/watchlist", methods=["POST"])
@@ -398,30 +406,33 @@ def api_watchlist_add():
         except Exception:
             name = symbol
     
-    wl = _load_watchlist()
-    # Check duplicate
-    if any(item["symbol"] == symbol for item in wl):
-        return jsonify({"error": "已在自选股中"}), 400
-    
-    wl.append({"symbol": symbol, "name": name})
-    _save_watchlist(wl)
+    with _watchlist_lock:
+        wl = _load_watchlist()
+        # Check duplicate
+        if any(item["symbol"] == symbol for item in wl):
+            return jsonify({"error": "已在自选股中"}), 400
+        wl.append({"symbol": symbol, "name": name})
+        _save_watchlist(wl)
     return jsonify({"ok": True, "symbol": symbol, "name": name})
 
 
 @app.route("/api/watchlist/<symbol>", methods=["DELETE"])
 def api_watchlist_delete(symbol):
-    wl = _load_watchlist()
-    wl = [item for item in wl if item["symbol"] != symbol]
-    _save_watchlist(wl)
+    with _watchlist_lock:
+        wl = _load_watchlist()
+        wl = [item for item in wl if item["symbol"] != symbol]
+        _save_watchlist(wl)
     # Clear cache
-    _signal_cache.pop(symbol, None)
+    with _signal_cache_lock:
+        _signal_cache.pop(symbol, None)
     return jsonify({"ok": True})
 
 
 @app.route("/api/watchlist/realtime")
 def api_watchlist_realtime():
     """批量实时行情 + 带缓存的信号摘要"""
-    wl = _load_watchlist()
+    with _watchlist_lock:
+        wl = _load_watchlist()
     if not wl:
         return jsonify([])
     
@@ -445,7 +456,8 @@ def api_watchlist_realtime():
             continue
         
         # Use cached signal or recalculate
-        cached = _signal_cache.get(sym)
+        with _signal_cache_lock:
+            cached = _signal_cache.get(sym)
         signal_data = None
         if cached and (now - cached["timestamp"]) < _SIGNAL_CACHE_TTL:
             signal_data = cached["signal"]
@@ -457,7 +469,12 @@ def api_watchlist_realtime():
                 sig_df = compute_signals(df)
                 sig = get_latest_signal(sig_df)
                 signal_data = asdict(sig)
-                _signal_cache[sym] = {"signal": signal_data, "timestamp": now}
+                with _signal_cache_lock:
+                    _signal_cache[sym] = {"signal": signal_data, "timestamp": now}
+                    # LRU eviction: remove oldest if exceeding max
+                    if len(_signal_cache) > _SIGNAL_CACHE_MAX:
+                        oldest_sym = min(_signal_cache, key=lambda k: _signal_cache[k]["timestamp"])
+                        del _signal_cache[oldest_sym]
             except Exception:
                 signal_data = None
         
@@ -784,7 +801,7 @@ def api_optimize():
         "best_params": result.best_params,
         "best_is_return": result.best_is_return,
         "best_oos_return": result.best_oos_return,
-        "pbo": result.pbo,
+        "oos_loss_rate": result.oos_loss_rate,
         "sharpe_ci": result.sharpe_ci,
         "ttest": result.ttest,
         "multi_compare": result.multi_compare,
@@ -1409,6 +1426,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <div class="spinner-overlay" id="spinner"><div class="spinner"></div></div>
 
 <script>
+// ---- Utilities ----
+function escapeHtml(str) {
+  if (str == null) return '';
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
 // ---- State ----
 let currentSymbol = '688110';
 let currentPeriod = 'daily';
@@ -1448,9 +1471,9 @@ searchInput.addEventListener('input', () => {
       const data = await r.json();
       if (!data.length) { searchDropdown.classList.remove('show'); return; }
       searchDropdown.innerHTML = data.map(d =>
-        `<div class="search-item" data-code="${d.code}">
-          <span><span class="code">${d.code}</span> <span class="name">${d.name}</span></span>
-          <span class="mkt">${d.market}</span>
+        `<div class="search-item" data-code="${escapeHtml(d.code)}">
+          <span><span class="code">${escapeHtml(d.code)}</span> <span class="name">${escapeHtml(d.name)}</span></span>
+          <span class="mkt">${escapeHtml(d.market)}</span>
         </div>`
       ).join('');
       searchDropdown.classList.add('show');
@@ -2398,7 +2421,7 @@ async function doOptimize() {
       {lbl:'搜索组合数', val:data.total_combos, cls:''},
       {lbl:'最优IS收益', val:data.best_is_return+'%', cls:data.best_is_return>=0?'val-green':'val-red'},
       {lbl:'最优OOS收益', val:data.best_oos_return+'%', cls:data.best_oos_return>=0?'val-green':'val-red'},
-      {lbl:'过拟合概率', val:(data.pbo*100).toFixed(0)+'%', cls:data.pbo<0.3?'val-green':data.pbo<0.6?'':'val-red'},
+      {lbl:'样本外失效率', val:(data.oos_loss_rate*100).toFixed(0)+'%', cls:data.oos_loss_rate<0.3?'val-green':data.oos_loss_rate<0.6?'':'val-red'},
       {lbl:'Sharpe', val:ci.sharpe||0, cls:ci.is_significant?'val-green':''},
       {lbl:'Sharpe 95%CI', val:(ci.ci_lower||0)+'~'+(ci.ci_upper||0), cls:ci.is_significant?'val-green':'val-red'},
       {lbl:'t检验p值', val:tt.p_value||'-', cls:tt.is_significant_5pct?'val-green':'val-red'},
@@ -2731,15 +2754,15 @@ function renderWatchlist(data) {
     const sigCls = (d.signal === '强烈买入' || d.signal === '买入') ? 'val-green' : (d.signal === '强烈卖出' || d.signal === '卖出') ? 'val-red' : '';
     const sigBg = (d.signal === '强烈买入') ? 'background:var(--green-dim)' : (d.signal === '强烈卖出') ? 'background:var(--red-dim)' : 'background:var(--bg4)';
     const trendCls = d.trend === '上涨' ? 'val-green' : d.trend === '下跌' ? 'val-red' : '';
-    return `<tr onclick="goDetail('${d.symbol}')">
-      <td><span class="td-name">${d.name}</span><br><span class="td-code">${d.symbol}</span></td>
+    return `<tr onclick="goDetail('${escapeHtml(d.symbol)}')">
+      <td><span class="td-name">${escapeHtml(d.name)}</span><br><span class="td-code">${escapeHtml(d.symbol)}</span></td>
       <td class="td-price ${chgCls}">${d.price.toFixed(2)}</td>
       <td class="td-change ${chgCls}">${sign}${d.change_pct.toFixed(2)}%</td>
       <td class="td-score">${d.bull_score}/6</td>
       <td class="td-score">${d.bear_score}/6</td>
-      <td class="${trendCls}">${d.trend}</td>
-      <td><span class="td-signal ${sigCls}" style="${sigBg}">${d.signal}</span></td>
-      <td><button class="wl-del-btn" onclick="event.stopPropagation();delWatchlist('${d.symbol}')">删除</button></td>
+      <td class="${trendCls}">${escapeHtml(d.trend)}</td>
+      <td><span class="td-signal ${sigCls}" style="${sigBg}">${escapeHtml(d.signal)}</span></td>
+      <td><button class="wl-del-btn" onclick="event.stopPropagation();delWatchlist('${escapeHtml(d.symbol)}')">删除</button></td>
     </tr>`;
   }).join('');
 }
@@ -2772,9 +2795,9 @@ wlAddInput.addEventListener('input', () => {
       const data = await r.json();
       if (!data.length) { wlAddDropdown.classList.remove('show'); return; }
       wlAddDropdown.innerHTML = data.map(d =>
-        `<div class="wl-add-item" data-code="${d.code}" data-name="${d.name}">
-          <span><span style="color:var(--accent);font-family:'JetBrains Mono',monospace;font-weight:600;">${d.code}</span> ${d.name}</span>
-          <span style="color:var(--text-dim);font-size:12px;">${d.market}</span>
+        `<div class="wl-add-item" data-code="${escapeHtml(d.code)}" data-name="${escapeHtml(d.name)}">
+          <span><span style="color:var(--accent);font-family:'JetBrains Mono',monospace;font-weight:600;">${escapeHtml(d.code)}</span> ${escapeHtml(d.name)}</span>
+          <span style="color:var(--text-dim);font-size:12px;">${escapeHtml(d.market)}</span>
         </div>`
       ).join('');
       wlAddDropdown.classList.add('show');
@@ -2887,8 +2910,8 @@ function pfRenderAssetList() {
     const name = a ? a.name : sym;
     const cat = a ? (catNames[a.category] || a.category) : '';
     html += '<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border);">' +
-      '<span style="font-size:12px;"><b>' + sym + '</b> ' + name + ' <span style="color:var(--text-dim);font-size:11px;">' + cat + '</span></span>' +
-      '<button style="background:none;border:none;color:var(--red);cursor:pointer;font-size:14px;" onclick="pfRemoveAsset(\'' + sym + '\')">✕</button></div>';
+      '<span style="font-size:12px;"><b>' + escapeHtml(sym) + '</b> ' + escapeHtml(name) + ' <span style="color:var(--text-dim);font-size:11px;">' + escapeHtml(cat) + '</span></span>' +
+      '<button style="background:none;border:none;color:var(--red);cursor:pointer;font-size:14px;" onclick="pfRemoveAsset(\'' + escapeHtml(sym) + '\')">✕</button></div>';
   });
   wrap.innerHTML = html || '<div style="color:var(--text-dim);font-size:12px;padding:8px;">暂无资产，请添加</div>';
   document.getElementById('pf-asset-count').textContent = '(' + pfSelectedSymbols.length + '个)';

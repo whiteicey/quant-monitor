@@ -5,11 +5,19 @@ import numpy as np
 import pandas as pd
 
 
+def _validate_period(period: int, name: str = "period") -> None:
+    """校验周期参数"""
+    if not isinstance(period, int) or period <= 0:
+        raise ValueError(f"{name} 必须为正整数, 当前值: {period}")
+
+
 def ema(series: pd.Series, period: int) -> pd.Series:
+    _validate_period(period, "period")
     return series.ewm(span=period, adjust=False).mean()
 
 
 def sma(series: pd.Series, period: int) -> pd.Series:
+    _validate_period(period, "period")
     return series.rolling(window=period).mean()
 
 
@@ -48,11 +56,12 @@ def bollinger_bands(close: pd.Series, period: int = 20, mult: float = 2.0):
 
 
 def atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
+    """ATR - 使用Wilder平滑(RMA, alpha=1/period), 与Pine Script ta.atr()一致"""
     tr1 = high - low
     tr2 = (high - close.shift(1)).abs()
     tr3 = (low - close.shift(1)).abs()
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    return tr.rolling(window=period).mean()
+    return tr.ewm(alpha=1 / period, min_periods=period).mean()
 
 
 def crossover(a: pd.Series, b: pd.Series) -> pd.Series:

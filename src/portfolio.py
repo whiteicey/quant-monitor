@@ -261,8 +261,10 @@ def portfolio_backtest(
         portfolio_value = holdings.sum()
         eq_curve.append({"time": int(date.timestamp()), "value": round(float(portfolio_value), 2)})
 
-    # 4. 等权基准曲线
+    # 4. 等权基准曲线（首日 = initial_capital，之后按等权日收益累计）
     eq_returns = returns.mean(axis=1)  # 每日等权平均收益
+    # 首日收益设为0，使基准曲线从initial_capital开始
+    eq_returns.iloc[0] = 0.0
     benchmark_values = initial_capital * (1 + eq_returns).cumprod()
     benchmark_curve = []
     for i in range(n_days):

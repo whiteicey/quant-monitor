@@ -123,14 +123,13 @@ def mean_variance(returns: pd.DataFrame, lookback: int = 120,
     # 正则化协方差矩阵(防奇异)
     cov += np.eye(n) * 1e-6
 
-    try:
-        cov_inv = np.linalg.inv(cov)
-    except np.linalg.LinAlgError:
-        return np.ones(n) / n
-
     # 最大Sharpe解析解: w ∝ Σ^{-1} (μ - rf)
     excess = mu - risk_free
-    raw_weights = cov_inv @ excess
+    try:
+        # 使用solve替代inv，数值更稳定: solve(cov, excess) 等价于 inv(cov) @ excess
+        raw_weights = np.linalg.solve(cov, excess)
+    except np.linalg.LinAlgError:
+        return np.ones(n) / n
 
     # 截断负权重(不允许做空), 重新归一化
     raw_weights = np.maximum(raw_weights, 0)

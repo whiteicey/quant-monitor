@@ -65,7 +65,7 @@ class OptimizationResult:
     best_params: dict              # 最优参数
     best_is_return: float          # 最优参数样本内收益
     best_oos_return: float         # 最优参数样本外收益
-    pbo: float                     # 样本外失效率(OOS loss rate)
+    oos_loss_rate: float            # 样本外失效率(OOS loss rate)
     sharpe_ci: dict                # 最优参数Sharpe置信区间
     ttest: dict                    # 最优参数t检验
     multi_compare: dict            # 多重比较校正结果
@@ -93,7 +93,7 @@ def grid_search_optimize(
     2. 对每组参数跑全样本回测 → 得到样本内(IS)指标
     3. 按IS Sharpe排序, 取top_n
     4. 对top_n做Walk-Forward验证 → 得到样本外(OOS)指标
-    5. 计算过拟合概率(PBO)
+    5. 计算样本外失效率(OOS Loss Rate)
     6. 对最优参数做统计检验
     7. 多重比较校正
     """
@@ -113,7 +113,7 @@ def grid_search_optimize(
         return OptimizationResult(
             strategy=strategy, total_combos=len(combos), results=[],
             best_params={}, best_is_return=0, best_oos_return=0,
-            pbo=1.0, sharpe_ci={}, ttest={}, multi_compare={},
+            oos_loss_rate=1.0, sharpe_ci={}, ttest={}, multi_compare={},
             recommendation="数据不足: 至少需要100根K线才能做参数优化")
 
     # ========== Phase 1: 在IS数据上搜索参数 ==========
@@ -154,7 +154,7 @@ def grid_search_optimize(
         return OptimizationResult(
             strategy=strategy, total_combos=len(combos), results=[],
             best_params={}, best_is_return=0, best_oos_return=0,
-            pbo=1.0, sharpe_ci={}, ttest={}, multi_compare={},
+            oos_loss_rate=1.0, sharpe_ci={}, ttest={}, multi_compare={},
             recommendation="无有效参数组合")
 
     # 按IS Sharpe排序
@@ -272,7 +272,7 @@ def grid_search_optimize(
         best_params=best["params"],
         best_is_return=best["is_return"],
         best_oos_return=best.get("oos_return", 0),
-        pbo=round(oos_loss_rate, 2),
+        oos_loss_rate=round(oos_loss_rate, 2),
         sharpe_ci=sharpe_ci,
         ttest=ttest,
         multi_compare={
@@ -284,7 +284,7 @@ def grid_search_optimize(
     )
 
 
-def _generate_recommendation(best, sharpe_ci, ttest, pbo, multi_compare, strategy) -> str:
+def _generate_recommendation(best, sharpe_ci, ttest, oos_loss_rate, multi_compare, strategy) -> str:
     """生成文字推荐"""
     parts = []
 
@@ -301,13 +301,13 @@ def _generate_recommendation(best, sharpe_ci, ttest, pbo, multi_compare, strateg
     else:
         parts.append(f"收益t检验不显著(p={ttest['p_value']:.4f}), 不能排除随机性")
 
-    # PBO
-    if pbo < 0.3:
-        parts.append(f"过拟合概率{pbo:.0%}, 较低, 参数泛化能力强")
-    elif pbo < 0.6:
-        parts.append(f"过拟合概率{pbo:.0%}, 中等, 需谨慎使用")
+    # 样本外失效率
+    if oos_loss_rate < 0.3:
+        parts.append(f"样本外失效率{oos_loss_rate:.0%}, 较低, 参数泛化能力强")
+    elif oos_loss_rate < 0.6:
+        parts.append(f"样本外失效率{oos_loss_rate:.0%}, 中等, 需谨慎使用")
     else:
-        parts.append(f"过拟合概率{pbo:.0%}, 较高, 样本内表现不可信")
+        parts.append(f"样本外失效率{oos_loss_rate:.0%}, 较高, 样本内表现不可信")
 
     # 多重比较
     n_sig = multi_compare.get("n_significant", 0)
@@ -315,9 +315,9 @@ def _generate_recommendation(best, sharpe_ci, ttest, pbo, multi_compare, strateg
     parts.append(f"经多重比较校正后, {n_tot}组参数中{n_sig}组仍统计显著")
 
     # 综合建议
-    if sharpe_ci.get("is_significant") and pbo < 0.3 and best.get("wf_consistency", 0) >= 60:
+    if sharpe_ci.get("is_significant") and oos_loss_rate < 0.3 and best.get("wf_consistency", 0) >= 60:
         parts.append("[推荐] 综合评估: 该参数组合较可靠, 可考虑使用")
-    elif pbo >= 0.6 or best.get("wf_consistency", 0) < 40:
+    elif oos_loss_rate >= 0.6 or best.get("wf_consistency", 0) < 40:
         parts.append("[警告] 综合评估: 过拟合风险高, 建议使用默认参数或换策略")
     else:
         parts.append("[注意] 综合评估: 结果一般, 建议延长回测时间或增加样本外验证")
